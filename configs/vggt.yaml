@@ -1,0 +1,27 @@
+# VGGT Camera Estimation Configuration
+
+# Method: 'vggt' or 'droid'
+method: vggt
+
+# Device
+device: cuda
+
+# VGGT-specific settings
+vggt_model_path: data/pretrained_models/vggt/model.pth
+max_frames: 100  # Process up to 100 frames at once
+image_size: 512  # Input image size for VGGT
+
+# DROID-SLAM fallback settings
+fallback_to_droid: true
+droid_weights_path: null  # Uses default from TRAM if null
+buffer_size: 512
+
+# Output settings
+save_depth_maps: true
+save_point_cloud: true
+save_visualizations: true
+
+# Processing options
+subsample_point_cloud: 4  # Subsample factor for point cloud generation
+max_depth: 100.0  # Maximum valid depth in meters
+min_depth: 0.1  # Minimum valid depth in meters

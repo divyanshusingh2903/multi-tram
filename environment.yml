@@ -1,0 +1,17 @@
+name: multi-tram
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - opencv-python
+      - pycolmap
+      - trimesh
+      - numpy
+      - torch
+      - torchvision
+      - matplotlib
+      - pyyaml
+      - scipy

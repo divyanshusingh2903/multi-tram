@@ -56,8 +56,9 @@ def generate_dynamic_masks(
     dilate_px = config.get("sam_dilate_px", 5)
 
     # Load YOLOv8-x
-    print("[Masking] Loading YOLOv8-x for dynamic object detection...")
-    yolo = YOLO("yolov8x.pt")
+    yolo_path = config.get("yolo_model_path", "yolov8x.pt")
+    print(f"[Masking] Loading YOLOv8-x from {yolo_path}...")
+    yolo = YOLO(yolo_path)
 
     # Load SAM 2 wrapper
     sam = SAMWrapper(

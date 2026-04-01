@@ -1,5 +1,8 @@
 # VGGT Camera Estimation Configuration
 
+# Pre-downloaded model weights (avoids runtime downloads)
+yolo_model_path: yolov8x.pt  # relative to working directory, or absolute path
+
 # Method: 'vggt' or 'droid'
 method: vggt
 

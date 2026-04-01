@@ -7,3 +7,13 @@
 
 # pycache
 __pycache__/
+
+# output
+output/
+output-*
+
+# data
+data/
+
+# yolo
+yolo*

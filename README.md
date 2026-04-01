@@ -72,22 +72,45 @@ Video Input
 
 ### Installation
 
+**1. Install Miniconda** (skip if already installed)
+
 ```bash
-# Clone repository
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh
+# Restart your shell or run: source ~/.bashrc
+```
+
+**2. Create the environment**
+
+```bash
 git clone https://github.com/your-username/multi-tram.git
 cd multi-tram
 
-# Create conda environment
 conda env create -f environment.yml
 conda activate multi-tram
+```
 
-# Install submodules
+**3. Initialize submodules**
+
+```bash
 git submodule update --init --recursive
 ```
 
+**4. Download YOLOv8x weights**
+
+Stage 1 requires `yolov8x.pt` in the project root. Download it once:
+
+```bash
+python -c "from ultralytics import YOLO; YOLO('yolov8x.pt')"
+# or manually:
+wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8x.pt
+```
+
+The path can be customized in `configs/vggt.yaml` via the `yolo_model_path` key.
+
 ### Running the Pipeline
 
-**Option 1: Run individual stages**
+**Option 1: Run individual stages (SLURM)**
 ```bash
 sbatch experiments/stage1_camera.slurm
 sbatch experiments/stage2_tracking.slurm
@@ -96,15 +119,9 @@ sbatch experiments/stage4_world.slurm
 # sbatch experiments/stage5_refinement.slurm  # Not yet tested
 ```
 
-**Option 2: Python API**
-```python
-from src.stages.stage1_camera import run_camera_estimation
-
-results = run_camera_estimation(
-    video_path='./data/videos/example.mp4',
-    output_dir='./results/example/1_camera_estimation',
-    config={'method': 'vggt'}
-)
+**Option 2: Run stages directly**
+```bash
+python experiments/run_stage1_camera.py --video data/my_video.mp4 --output_dir ./output/
 ```
 
 ## Project Structure

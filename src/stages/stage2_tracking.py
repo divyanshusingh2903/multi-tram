@@ -1,649 +1,337 @@
 """
-Stage 2: Multi-Person Detection, Segmentation & Tracking
-Uses PHALP+ for tracking with optional VGGT feature enhancement
+Stage 2 — Multi-Person Detection & Tracking (spec §3).
+
+Sub-steps:
+  A. PHALP+ tracking (primary tracker) → per-frame detections with stable IDs.
+  B. VGGT depth-guided world-frame ID correction → fix ID switches caused by
+     camera motion, merge fragmented tracks, discard short tracks.
+
+After this stage, each Track object has SAM 2 masks for every frame the person
+is visible (used by Stage 3 for masked VIMO crops).
+
+Output artifacts (relative to output_dir/):
+  tracks.npz                               track metadata for all N persons
+  detections/frame_{t:06d}.pkl             list of Detection per frame
+  masks/frame_{t:06d}_person_{id:03d}.npy  bool (H, W) — SAM 2 mask per person
+  id_corrections.json                      log of corrected ID switches
+  metadata.json
 """
-import numpy as np
-import cv2
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-import time
 import json
 import pickle
-from dataclasses import dataclass
+import time
+import numpy as np
+import cv2
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional
 
-from src.models.phalp_wrapper import PHALPWrapper
-from src.utils.kalman_filter import KalmanFilter
-from src.utils.hungarian_algorithm import (
-    optimal_assignment,
-    greedy_assignment,
-    create_cost_matrix,
-    SCIPY_AVAILABLE
-)
+from src.models.phalp_wrapper import PHALPWrapper, PHALPDetection
+from src.models.sam_wrapper import SAMWrapper
+from src.utils.world_correction import PHALPTrack, correct_world_frame_ids
 
 
-# KalmanFilter imported from utils.kalman_filter
-
-@dataclass
-class Detection:
-    """Detection result for a single person in a frame"""
-    frame_id: int
-    track_id: Optional[int]
-    bbox: np.ndarray  # [x, y, w, h]
-    mask: Optional[np.ndarray]  # Binary mask
-    keypoints_2d: np.ndarray  # (K, 3) with confidence
-    confidence: float
-    visibility: float
-
+# ---------------------------------------------------------------------------
+# Output data type (spec §3.2 "Output per track")
+# ---------------------------------------------------------------------------
 
 @dataclass
 class Track:
-    """Multi-frame track for a single person"""
+    """One tracked person across the video."""
     track_id: int
-    detections: List[Detection]
     start_frame: int
     end_frame: int
-
-    def __post_init__(self):
-        if self.detections:
-            self.start_frame = min(d.frame_id for d in self.detections)
-            self.end_frame = max(d.frame_id for d in self.detections)
-
-
-class TrackingManager:
-    """Manages tracking across frames with ID assignment"""
-
-    def __init__(
-        self,
-        max_age: int = 30,
-        similarity_threshold: float = 0.5,
-        use_kalman_filter: bool = True,
-        use_hungarian_algorithm: bool = True
-    ):
-        """
-        Args:
-            max_age: Maximum frames to keep inactive track before deletion
-            similarity_threshold: Threshold for association score
-            use_kalman_filter: Whether to use Kalman filter for prediction (default: True)
-            use_hungarian_algorithm: Whether to use Hungarian algorithm for optimal assignment (default: True)
-        """
-        self.max_age = max_age
-        self.similarity_threshold = similarity_threshold
-        self.use_kalman_filter = use_kalman_filter
-        self.use_hungarian_algorithm = use_hungarian_algorithm and SCIPY_AVAILABLE
-        self.next_track_id = 1
-        self.active_tracks: Dict[int, Track] = {}
-        self.inactive_tracks: Dict[int, Track] = {}
-        self.kalman_filters: Dict[int, KalmanFilter] = {}  # One Kalman filter per track
-
-        if use_hungarian_algorithm and not SCIPY_AVAILABLE:
-            print("[TrackingManager] Warning: scipy not available, Hungarian algorithm disabled")
-            self.use_hungarian_algorithm = False
-
-        print(f"[TrackingManager] Initialized with Kalman={self.use_kalman_filter}, "
-              f"Hungarian={self.use_hungarian_algorithm}")
-
-    def associate_detections(
-        self,
-        frame_id: int,
-        detections: List[Detection],
-        features: Optional[np.ndarray] = None
-    ) -> List[Detection]:
-        """
-        Associate detections with existing tracks using Kalman filter and Hungarian algorithm.
-
-        Args:
-            frame_id: Current frame index
-            detections: List of detections in current frame
-            features: Optional feature vectors for better association
-
-        Returns:
-            Detections with assigned track IDs
-        """
-        if not self.active_tracks:
-            # First frame: assign new IDs to all detections
-            for det in detections:
-                det.track_id = self.next_track_id
-                # Initialize Kalman filter if enabled
-                if self.use_kalman_filter:
-                    self.kalman_filters[self.next_track_id] = KalmanFilter(det.bbox)
-                self.next_track_id += 1
-            return detections
-
-        # Step 1: Predict next positions for active tracks
-        track_predictions = {}
-        if self.use_kalman_filter:
-            for track_id in self.active_tracks.keys():
-                if track_id in self.kalman_filters:
-                    predicted_bbox = self.kalman_filters[track_id].predict()
-                    track_predictions[track_id] = predicted_bbox
-                else:
-                    # Fallback to last detection if no Kalman filter
-                    last_det = self.active_tracks[track_id].detections[-1]
-                    track_predictions[track_id] = last_det.bbox
-
-        # Step 2: Create cost matrix for assignment
-        if self.use_hungarian_algorithm and len(detections) > 0 and len(self.active_tracks) > 0:
-            cost_matrix = self._create_cost_matrix(detections, track_predictions, features)
-            # Solve assignment problem using Hungarian algorithm
-            assignments = optimal_assignment(cost_matrix)
-        else:
-            # Fallback to greedy assignment
-            assignments = self._greedy_assignment(detections, track_predictions, features)
-
-        # Step 3: Update tracks
-        used_tracks = set()
-
-        for det_idx, det in enumerate(detections):
-            # Find matching track
-            matching_track_id = None
-            for track_id, det_assigned_idx in assignments.items():
-                if det_assigned_idx == det_idx:
-                    matching_track_id = track_id
-                    break
-
-            if matching_track_id is not None and matching_track_id in self.active_tracks:
-                det.track_id = matching_track_id
-                used_tracks.add(matching_track_id)
-
-                # Update Kalman filter with measurement
-                if self.use_kalman_filter and matching_track_id in self.kalman_filters:
-                    self.kalman_filters[matching_track_id].update(det.bbox)
-            else:
-                # Create new track
-                det.track_id = self.next_track_id
-                if self.use_kalman_filter:
-                    self.kalman_filters[self.next_track_id] = KalmanFilter(det.bbox)
-                self.next_track_id += 1
-
-        # Step 4: Update active tracks
-        for det in detections:
-            if det.track_id in self.active_tracks:
-                self.active_tracks[det.track_id].detections.append(det)
-            else:
-                self.active_tracks[det.track_id] = Track(
-                    track_id=det.track_id,
-                    detections=[det],
-                    start_frame=frame_id,
-                    end_frame=frame_id
-                )
-
-        return detections
-
-    def _create_cost_matrix(
-        self,
-        detections: List[Detection],
-        track_predictions: Dict[int, np.ndarray],
-        features: Optional[np.ndarray] = None
-    ) -> np.ndarray:
-        """
-        Create cost matrix for Hungarian algorithm.
-
-        Delegates to utils.hungarian_algorithm.create_cost_matrix for portability.
-
-        Args:
-            detections: List of detections
-            track_predictions: Dict of track_id -> predicted bbox
-            features: Optional feature vectors
-
-        Returns:
-            Cost matrix (N_tracks, N_detections)
-        """
-        # Extract bboxes from Detection objects
-        detection_bboxes = [det.bbox for det in detections]
-
-        # Use utils function
-        return create_cost_matrix(
-            detection_bboxes,
-            track_predictions,
-            similarity_threshold=self.similarity_threshold
-        )
-
-    def _greedy_assignment(
-        self,
-        detections: List[Detection],
-        track_predictions: Dict[int, np.ndarray],
-        features: Optional[np.ndarray] = None
-    ) -> Dict[int, int]:
-        """
-        Greedy assignment (fallback when Hungarian algorithm unavailable).
-
-        Delegates to utils.hungarian_algorithm.greedy_assignment for portability.
-
-        Returns:
-            Dict mapping track_idx -> detection_index
-        """
-        # Create cost matrix
-        cost_matrix = self._create_cost_matrix(detections, track_predictions, features)
-
-        # Use utils function for greedy assignment
-        return greedy_assignment(cost_matrix)
-
-    def _compute_similarity(
-        self,
-        det: Detection,
-        last_det: Detection,
-        features: Optional[np.ndarray] = None
-    ) -> float:
-        """Compute similarity between two detections (legacy method)"""
-        # Simple IoU-based similarity
-        iou = self._bbox_iou(det.bbox, last_det.bbox)
-        return iou
-
-    @staticmethod
-    def _bbox_iou(bbox1: np.ndarray, bbox2: np.ndarray) -> float:
-        """Compute IoU between two bboxes [x, y, w, h]"""
-        x1_min, y1_min = bbox1[:2]
-        x1_max, y1_max = x1_min + bbox1[2], y1_min + bbox1[3]
-
-        x2_min, y2_min = bbox2[:2]
-        x2_max, y2_max = x2_min + bbox2[2], y2_min + bbox2[3]
-
-        inter_x_min = max(x1_min, x2_min)
-        inter_y_min = max(y1_min, y2_min)
-        inter_x_max = min(x1_max, x2_max)
-        inter_y_max = min(y1_max, y2_max)
-
-        if inter_x_max < inter_x_min or inter_y_max < inter_y_min:
-            return 0.0
-
-        inter_area = (inter_x_max - inter_x_min) * (inter_y_max - inter_y_min)
-        area1 = bbox1[2] * bbox1[3]
-        area2 = bbox2[2] * bbox2[3]
-        union_area = area1 + area2 - inter_area
-
-        return inter_area / (union_area + 1e-6)
-
-
-class PersonSegmenter:
-    """Handles per-person segmentation using SAM or similar"""
-
-    def __init__(self, use_sam: bool = False):
-        """
-        Args:
-            use_sam: Whether to use SAM for segmentation
-        """
-        self.use_sam = use_sam
-        self.sam = None
-
-        if use_sam:
-            try:
-                from segment_anything import sam_model_registry
-                self.sam = sam_model_registry["vit_b"](checkpoint="models/sam_vit_b_01ec64.pth")
-            except ImportError:
-                print("[Stage2] Warning: SAM not available, using simple segmentation")
-                self.use_sam = False
-
-    def segment_person(
-        self,
-        frame: np.ndarray,
-        bbox: np.ndarray,
-        keypoints_2d: Optional[np.ndarray] = None
-    ) -> np.ndarray:
-        """
-        Segment a single person from image.
-
-        Args:
-            frame: Input image (H, W, 3) in RGB
-            bbox: Bounding box [x, y, w, h]
-            keypoints_2d: Optional 2D keypoints for refinement
-
-        Returns:
-            Binary mask (H, W)
-        """
-        if self.use_sam:
-            return self._segment_with_sam(frame, bbox, keypoints_2d)
-        else:
-            return self._segment_with_bbox(frame, bbox)
-
-    def _segment_with_bbox(self, frame: np.ndarray, bbox: np.ndarray) -> np.ndarray:
-        """Simple bounding box-based segmentation"""
-        H, W = frame.shape[:2]
-        mask = np.zeros((H, W), dtype=np.uint8)
-
-        x, y, w, h = bbox.astype(int)
-        x_min = max(0, x)
-        y_min = max(0, y)
-        x_max = min(W, x + w)
-        y_max = min(H, y + h)
-
-        mask[y_min:y_max, x_min:x_max] = 1
-
-        return mask
-
-    def _segment_with_sam(
-        self,
-        frame: np.ndarray,
-        bbox: np.ndarray,
-        keypoints_2d: Optional[np.ndarray] = None
-    ) -> np.ndarray:
-        """Segmentation using Segment Anything Model"""
-        # Use bbox as prompt for SAM
-        x, y, w, h = bbox
-        box = np.array([x, y, x + w, y + h])
-
-        # Use keypoints as additional prompts if available
-        points = None
-        point_labels = None
-        if keypoints_2d is not None:
-            # Use torso/hip keypoints as prompts
-            valid_points = keypoints_2d[keypoints_2d[:, 2] > 0.5][:, :2]
-            if len(valid_points) > 0:
-                points = valid_points
-                point_labels = np.ones(len(points))
-
-        # SAM inference would go here
-        # For now, return bbox-based mask as fallback
-        return self._segment_with_bbox(frame, bbox)
-
-
-class PHALP_Tracker:
-    """Wrapper around PHALP+ for multi-person tracking"""
-
-    def __init__(
-        self,
-        device: str = 'cuda',
-        model_path: Optional[str] = None,
-        use_kalman_filter: bool = True,
-        use_hungarian_algorithm: bool = True
-    ):
-        """
-        Args:
-            device: Device to run inference on ('cuda' or 'cpu')
-            model_path: Path to pretrained PHALP model
-            use_kalman_filter: Whether to use Kalman filter (default: True)
-            use_hungarian_algorithm: Whether to use Hungarian algorithm (default: True)
-        """
-        self.device = device
-        self.phalp_wrapper = PHALPWrapper(model_path=model_path, device=device)
-        self.segmenter = PersonSegmenter(use_sam=False)
-        self.tracking_manager = TrackingManager(
-            use_kalman_filter=use_kalman_filter,
-            use_hungarian_algorithm=use_hungarian_algorithm
-        )
-
-    def detect_and_track(
-        self,
-        frames: np.ndarray,
-        camera_poses: Optional[np.ndarray] = None
-    ) -> Dict:
-        """
-        Run multi-person detection and tracking on video.
-
-        Args:
-            frames: Video frames (T, H, W, 3) in RGB
-            camera_poses: Optional camera poses for 3D association
-
-        Returns:
-            Dictionary with tracking results
-        """
-        T, H, W = frames.shape[:3]
-        all_detections = []
-        all_keypoints = []
-        all_masks = []
-
-        print(f"[Stage2] Running detection and tracking on {T} frames...")
-
-        start_time = time.time()
-
-        for frame_idx in range(T):
-            if frame_idx % 10 == 0:
-                print(f"  - Frame {frame_idx}/{T}")
-
-            frame = frames[frame_idx]
-
-            # Run detection (using PHALP or simple detector)
-            detections = self._detect_frame(frame)
-
-            # Track
-            detections = self.tracking_manager.associate_detections(
-                frame_idx, detections
-            )
-
-            # Segment
-            for det in detections:
-                mask = self.segmenter.segment_person(frame, det.bbox, det.keypoints_2d)
-                det.mask = mask
-
-            all_detections.append(detections)
-            all_keypoints.append([d.keypoints_2d for d in detections])
-            all_masks.append([d.mask for d in detections])
-
-        elapsed = time.time() - start_time
-
-        # Consolidate results
-        results = {
-            'detections': all_detections,
-            'keypoints_2d': all_keypoints,
-            'masks': all_masks,
-            'num_people': len(self.tracking_manager.active_tracks),
-            'num_frames': T,
-            'processing_time': elapsed,
-            'fps': T / elapsed
-        }
-
-        print(f"[Stage2] Detection/tracking completed in {elapsed:.2f}s ({T/elapsed:.2f} fps)")
-        print(f"  - Detected {results['num_people']} people")
-
-        return results
-
-    def _detect_frame(self, frame: np.ndarray) -> List[Detection]:
-        """
-        Run detection on a single frame.
-
-        Args:
-            frame: Input frame (H, W, 3) in RGB
-
-        Returns:
-            List of detections
-        """
-        if self.model is not None:
-            return self._detect_with_phalp(frame)
-        else:
-            return self._detect_simple(frame)
-
-    def _detect_with_phalp(self, frame: np.ndarray) -> List[Detection]:
-        """Detection using PHALP+"""
-        try:
-            # Use PHALP wrapper
-            phalp_detections = self.phalp_wrapper.detect_frame(frame)
-
-            detections = []
-            for phalp_det in phalp_detections:
-                det = Detection(
-                    frame_id=0,  # Set properly in parent function
-                    track_id=phalp_det.track_id,
-                    bbox=phalp_det.bbox,
-                    mask=None,
-                    keypoints_2d=phalp_det.keypoints_2d if phalp_det.keypoints_2d is not None else np.zeros((17, 3)),
-                    confidence=phalp_det.confidence,
-                    visibility=1.0 if phalp_det.confidence > 0.5 else 0.0
-                )
-                detections.append(det)
-
-            return detections
-        except Exception as e:
-            print(f"[Stage2] PHALP detection failed: {e}")
-            return []
-
-    def _detect_simple(self, frame: np.ndarray) -> List[Detection]:
-        """Simple detection fallback (returns empty list)"""
-        # In a real implementation, would use YOLOv7 or similar
-        return []
-
+    frames: List[int]              # all frame indices where visible
+    bboxes: np.ndarray             # float32 (T_i, 4) [x1,y1,x2,y2]
+    masks: np.ndarray              # bool    (T_i, H, W) — SAM 2 per-frame mask
+    keypoints_2d: np.ndarray       # float32 (T_i, 24, 3)
+    smpl_init: Dict                # coarse SMPL from PHALP+ (input to VIMO)
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 main entry point (spec §3.4)
+# ---------------------------------------------------------------------------
 
 def run_tracking(
-    video_path: str,
-    camera_poses: Optional[np.ndarray],
+    frames: np.ndarray,
+    camera_results: Dict,
     output_dir: Path,
     config: Dict,
-    max_frames: Optional[int] = None
-) -> Dict:
+) -> List[Track]:
     """
-    Run Stage 2: Multi-person tracking.
+    Run Stage 2: Multi-Person Detection & Tracking.
 
     Args:
-        video_path: Path to input video
-        camera_poses: Camera poses from Stage 1
-        output_dir: Directory to save results
-        config: Configuration dictionary with optional keys:
-            - 'device': Device to use ('cuda' or 'cpu', default: 'cuda')
-            - 'use_kalman_filter': Enable Kalman filter (default: True)
-            - 'use_hungarian_algorithm': Enable Hungarian algorithm (default: True)
-        max_frames: Maximum frames to process
+        frames:         (T, H, W, 3) uint8 RGB.
+        camera_results: Stage 1 output dict — keys: poses, intrinsics,
+                        depths, track_features, confidence, method_used.
+        output_dir:     Directory to write all artifacts.
+        config:         Dict with keys (defaults shown):
+                          phalp_cfg            "configs/phalp.yaml" (unused — PHALP
+                                               uses its own Hydra config; pass
+                                               model_path / device instead)
+                          device               "cuda"
+                          phalp_model_path     None
+                          min_track_len        8
+                          v_max_world          2.0
+                          embed_sim_threshold  0.6
+                          depth_roi_px         5
+                          sam_model            "sam2_hiera_large.yaml"
+                          sam_checkpoint       None
+                          sam_dilate_px        5
 
     Returns:
-        Dictionary with tracking results
+        List of Track objects — one per unique person, ordered by track_id.
     """
-    print("\n" + "="*80)
-    print("STAGE 2: MULTI-PERSON DETECTION, SEGMENTATION & TRACKING")
-    print("="*80 + "\n")
+    print("\n" + "=" * 80)
+    print("STAGE 2: MULTI-PERSON DETECTION & TRACKING (PHALP+)")
+    print("=" * 80 + "\n")
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    T, H, W, _ = frames.shape
 
-    # Load video
-    print(f"[Stage2] Loading video: {video_path}")
-    cap = cv2.VideoCapture(video_path)
+    device = config.get("device", "cuda")
 
-    if not cap.isOpened():
-        raise ValueError(f"Cannot open video: {video_path}")
+    # ------------------------------------------------------------------
+    # Sub-step A — PHALP+ tracking (spec §3.2)
+    # ------------------------------------------------------------------
+    print("[Stage2] Sub-step A: PHALP+ tracking...")
+    phalp = PHALPWrapper(
+        model_path=config.get("phalp_model_path", None),
+        device=device,
+    )
+    t0 = time.time()
+    dets_by_frame: Dict[int, List[PHALPDetection]] = phalp.track_frames(
+        frames, tmp_dir=output_dir / "_tmp"
+    )
+    phalp_time = time.time() - t0
+    print(f"[Stage2] PHALP+ done in {phalp_time:.1f}s")
 
-    frames = []
-    frame_idx = 0
+    # ------------------------------------------------------------------
+    # Build PHALPTrack objects for world-frame correction
+    # ------------------------------------------------------------------
+    phalp_tracks: Dict[int, PHALPTrack] = {}
 
+    for frame_id in range(T):
+        dets = dets_by_frame.get(frame_id, [])
+        for det in dets:
+            tid = det.track_id
+            if tid not in phalp_tracks:
+                phalp_tracks[tid] = PHALPTrack(
+                    track_id=tid,
+                    frames=[],
+                    bboxes=np.zeros((0, 4), dtype=np.float32),
+                    keypoints_2d=np.zeros((0, 24, 3), dtype=np.float32),
+                    smpl_init={},
+                    embeddings=np.zeros((0, 4096), dtype=np.float32),
+                    world_positions=np.zeros((0, 3), dtype=np.float32),
+                )
+            trk = phalp_tracks[tid]
+            trk.frames.append(frame_id)
+            trk.bboxes = np.concatenate(
+                [trk.bboxes, det.bbox[None]], axis=0
+            )
+            trk.keypoints_2d = np.concatenate(
+                [trk.keypoints_2d, det.keypoints_2d[None]], axis=0
+            )
+            trk.embeddings = np.concatenate(
+                [trk.embeddings, det.embedding[None]], axis=0
+            )
+            # Accumulate SMPL — keep last-frame value (VIMO overrides in Stage 3)
+            trk.smpl_init = det.smpl
+
+    tracks_list = list(phalp_tracks.values())
+    print(f"[Stage2] PHALP+ found {len(tracks_list)} track(s) before correction.")
+
+    # ------------------------------------------------------------------
+    # Sub-step B — World-frame ID correction (spec §3.3)
+    # ------------------------------------------------------------------
+    print("[Stage2] Sub-step B: VGGT depth-guided world-frame ID correction...")
+    corrected_tracks, correction_log = correct_world_frame_ids(
+        tracks_list,
+        camera_results,
+        config={
+            "v_max_world":          config.get("v_max_world",         2.0),
+            "embed_sim_threshold":  config.get("embed_sim_threshold",  0.6),
+            "depth_roi_px":         config.get("depth_roi_px",         5),
+            "min_track_len":        config.get("min_track_len",        8),
+        },
+    )
+    print(f"[Stage2] After correction: {len(corrected_tracks)} track(s).")
+
+    # Save id_corrections.json
+    with open(output_dir / "id_corrections.json", "w") as f:
+        json.dump(correction_log, f, indent=2)
+
+    # ------------------------------------------------------------------
+    # SAM 2 person masks (spec §3.2 "Output per track" — masks field)
+    # ------------------------------------------------------------------
+    print("[Stage2] Computing SAM 2 person masks...")
+    sam = SAMWrapper(
+        model_cfg=config.get("sam_model", "sam2_hiera_large.yaml"),
+        checkpoint=config.get("sam_checkpoint", None),
+        device=device,
+        dilate_px=config.get("sam_dilate_px", 5),
+    )
+    masks_dir = output_dir / "masks"
+    masks_dir.mkdir(exist_ok=True)
+
+    # Build per-person mask arrays and write per-frame mask files
+    person_masks: Dict[int, List[np.ndarray]] = {trk.track_id: [] for trk in corrected_tracks}
+    tid_to_track = {trk.track_id: trk for trk in corrected_tracks}
+
+    for t in range(T):
+        active = [(trk, idx) for trk in corrected_tracks
+                  for idx, f in enumerate(trk.frames) if f == t]
+
+        if not active:
+            continue
+
+        frame = frames[t]
+        boxes = np.array([trk.bboxes[idx] for trk, idx in active], dtype=np.float32)
+        inst_masks = sam.segment_boxes(frame, boxes)
+
+        for (trk, _), mask in zip(active, inst_masks):
+            person_masks[trk.track_id].append(mask)
+            np.save(
+                masks_dir / f"frame_{t:06d}_person_{trk.track_id:03d}.npy",
+                mask.astype(bool),
+            )
+
+    # ------------------------------------------------------------------
+    # Assemble final Track objects (spec §3.2)
+    # ------------------------------------------------------------------
+    final_tracks: List[Track] = []
+    for ptrk in corrected_tracks:
+        tid = ptrk.track_id
+        mlist = person_masks.get(tid, [])
+        # Pad missing masks with zeros if needed
+        while len(mlist) < len(ptrk.frames):
+            mlist.append(np.zeros((H, W), dtype=bool))
+
+        track = Track(
+            track_id=tid,
+            start_frame=ptrk.frames[0],
+            end_frame=ptrk.frames[-1],
+            frames=ptrk.frames,
+            bboxes=ptrk.bboxes,
+            masks=np.stack(mlist, axis=0),
+            keypoints_2d=ptrk.keypoints_2d,
+            smpl_init=ptrk.smpl_init,
+        )
+        final_tracks.append(track)
+
+    # ------------------------------------------------------------------
+    # Save artifacts (spec §3.4)
+    # ------------------------------------------------------------------
+    _save_tracking_results(final_tracks, dets_by_frame, T, output_dir)
+
+    total_time = time.time() - t0
+    print(f"\n[Stage2] Done in {total_time:.1f}s  —  {len(final_tracks)} person(s) tracked.")
+    return final_tracks
+
+
+# ---------------------------------------------------------------------------
+# Save helpers
+# ---------------------------------------------------------------------------
+
+def _save_tracking_results(
+    tracks: List[Track],
+    dets_by_frame: Dict[int, List[PHALPDetection]],
+    T: int,
+    output_dir: Path,
+):
+    # tracks.npz — track metadata (no large arrays)
+    track_meta = {
+        f"track_{trk.track_id}_frames": np.array(trk.frames, dtype=np.int32)
+        for trk in tracks
+    }
+    track_meta.update({
+        f"track_{trk.track_id}_bboxes": trk.bboxes for trk in tracks
+    })
+    np.savez(output_dir / "tracks.npz", **track_meta)
+
+    # detections/frame_{t:06d}.pkl
+    det_dir = output_dir / "detections"
+    det_dir.mkdir(exist_ok=True)
+    for frame_id in range(T):
+        dets = dets_by_frame.get(frame_id, [])
+        det_list = []
+        for d in dets:
+            det_list.append({
+                "track_id":    d.track_id,
+                "bbox":        d.bbox.tolist(),
+                "confidence":  d.confidence,
+                "keypoints_2d": d.keypoints_2d.tolist(),
+            })
+        with open(det_dir / f"frame_{frame_id:06d}.pkl", "wb") as f:
+            pickle.dump(det_list, f)
+
+    # metadata.json
+    meta = {
+        "num_tracks": len(tracks),
+        "num_frames": T,
+        "track_ids":  [trk.track_id for trk in tracks],
+        "track_lengths": {
+            trk.track_id: len(trk.frames) for trk in tracks
+        },
+    }
+    with open(output_dir / "metadata.json", "w") as f:
+        json.dump(meta, f, indent=2)
+
+    print(f"[Stage2] Saved tracks.npz, {T} detection frames, masks, metadata.")
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import argparse, yaml
+
+    parser = argparse.ArgumentParser(description="Stage 2: Multi-Person Tracking")
+    parser.add_argument("--video",        required=True)
+    parser.add_argument("--stage1_dir",   required=True, help="Stage 1 output directory")
+    parser.add_argument("--output",       required=True)
+    parser.add_argument("--config",       default="configs/tracking.yaml")
+    parser.add_argument("--max_frames",   type=int, default=None)
+    args = parser.parse_args()
+
+    cfg = {}
+    if Path(args.config).exists():
+        with open(args.config) as f:
+            cfg = yaml.safe_load(f) or {}
+
+    # Load Stage 1 results from disk
+    stage1_dir = Path(args.stage1_dir)
+    cam = np.load(stage1_dir / "cameras.npz")
+    T_cam = len(cam["poses"])
+
+    depths = np.stack([
+        np.load(stage1_dir / "depth_maps" / f"depth_{t:06d}.npy")
+        for t in range(T_cam)
+    ])
+
+    camera_results = {
+        "poses":      cam["poses"],
+        "intrinsics": cam["intrinsics"],
+        "confidence": cam["confidence"],
+        "depths":     depths,
+        "method_used": "vggt",
+    }
+
+    # Load frames
+    cap = cv2.VideoCapture(args.video)
+    frames_list = []
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frames.append(frame)
-        frame_idx += 1
-
-        if max_frames is not None and frame_idx >= max_frames:
+        frames_list.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        if args.max_frames and len(frames_list) >= args.max_frames:
             break
-
     cap.release()
-    frames = np.stack(frames)
+    frames = np.stack(frames_list)
 
-    print(f"[Stage2] Loaded {len(frames)} frames")
-
-    # Initialize tracker with configuration
-    device = config.get('device', 'cuda')
-    use_kalman = config.get('use_kalman_filter', True)
-    use_hungarian = config.get('use_hungarian_algorithm', True)
-
-    tracker = PHALP_Tracker(
-        device=device,
-        use_kalman_filter=use_kalman,
-        use_hungarian_algorithm=use_hungarian
-    )
-
-    # Run tracking
-    results = tracker.detect_and_track(frames, camera_poses)
-
-    # Save results
-    save_tracking_results(results, output_dir)
-
-    # Print summary
-    print("\n" + "-"*80)
-    print("STAGE 2 SUMMARY")
-    print("-"*80)
-    print(f"Number of frames: {results['num_frames']}")
-    print(f"Number of people detected: {results['num_people']}")
-    print(f"Processing time: {results['processing_time']:.2f} seconds")
-    print(f"Average speed: {results['fps']:.2f} fps")
-    print("-"*80 + "\n")
-
-    return results
-
-
-def save_tracking_results(results: Dict, output_dir: Path):
-    """Save tracking results to disk"""
-    print(f"[Stage2] Saving results to {output_dir}")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save detections
-    detections_dir = output_dir / 'detections'
-    detections_dir.mkdir(exist_ok=True)
-
-    for frame_idx, frame_detections in enumerate(results['detections']):
-        frame_data = {
-            'frame_id': frame_idx,
-            'detections': []
-        }
-
-        for det in frame_detections:
-            det_data = {
-                'track_id': det.track_id,
-                'bbox': det.bbox.tolist(),
-                'confidence': float(det.confidence),
-                'visibility': float(det.visibility),
-                'keypoints_2d': det.keypoints_2d.tolist() if det.keypoints_2d is not None else None
-            }
-            frame_data['detections'].append(det_data)
-
-        with open(detections_dir / f'frame_{frame_idx:06d}.pkl', 'wb') as f:
-            pickle.dump(frame_data, f)
-
-    # Save masks
-    masks_dir = output_dir / 'masks'
-    masks_dir.mkdir(exist_ok=True)
-
-    for frame_idx, frame_masks in enumerate(results['masks']):
-        for person_idx, mask in enumerate(frame_masks):
-            if mask is not None:
-                np.save(
-                    masks_dir / f'frame_{frame_idx:06d}_person_{person_idx:03d}.npy',
-                    mask
-                )
-
-    # Save metadata
-    metadata = {
-        'num_frames': results['num_frames'],
-        'num_people': results['num_people'],
-        'processing_time': results['processing_time'],
-        'fps': results['fps']
-    }
-
-    with open(output_dir / 'metadata.json', 'w') as f:
-        json.dump(metadata, f, indent=2)
-
-    print("[Stage2] Results saved successfully")
-
-
-if __name__ == "__main__":
-    """Test Stage 2 independently"""
-    import argparse
-    import yaml
-
-    parser = argparse.ArgumentParser(description="Test Stage 2: Tracking")
-    parser.add_argument("--video", type=str, required=True, help="Input video path")
-    parser.add_argument("--output", type=str, required=True, help="Output directory")
-    parser.add_argument("--config", type=str, default="configs/vggt.yaml", help="Config file")
-    parser.add_argument("--max_frames", type=int, default=None, help="Max frames to process")
-
-    args = parser.parse_args()
-
-    # Load config
-    if Path(args.config).exists():
-        with open(args.config, 'r') as f:
-            config = yaml.safe_load(f)
-    else:
-        config = {
-            'device': 'cuda',
-            'max_age': 30,
-            'similarity_threshold': 0.5
-        }
-
-    # Run Stage 2
-    results = run_tracking(
-        video_path=args.video,
-        camera_poses=None,
-        output_dir=Path(args.output),
-        config=config,
-        max_frames=args.max_frames
-    )
-
-    print("[Stage2] Test complete!")
+    tracks = run_tracking(frames, camera_results, Path(args.output), cfg)
+    print(f"[Stage2] Done — {len(tracks)} tracks.")

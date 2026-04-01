@@ -52,10 +52,24 @@ fi
 echo ""
 echo "3. Checking required Python packages..."
 
+# Map package names to import names (handle cases where they differ)
+declare -A PACKAGE_IMPORTS=(
+    ["torch"]="torch"
+    ["numpy"]="numpy"
+    ["opencv-python"]="cv2"
+    ["scipy"]="scipy"
+    ["yaml"]="yaml"
+    ["pycolmap"]="pycolmap"
+    ["trimesh"]="trimesh"
+    ["matplotlib"]="matplotlib"
+)
+
 REQUIRED_PACKAGES=("torch" "numpy" "opencv-python" "scipy" "yaml")
 for pkg in "${REQUIRED_PACKAGES[@]}"; do
-    if python -c "import ${pkg}" 2>/dev/null; then
-        VERSION=$(python -c "import ${pkg}; print(${pkg}.__version__)" 2>/dev/null || echo "unknown")
+    import_name=${PACKAGE_IMPORTS[$pkg]:-$pkg}
+    
+    if python -c "import ${import_name}" 2>/dev/null; then
+        VERSION=$(python -c "import ${import_name}; print(${import_name}.__version__)" 2>/dev/null || echo "unknown")
         echo -e "${GREEN}✓${NC} ${pkg} (${VERSION})"
     else
         echo -e "${RED}✗${NC} ${pkg} not found"
@@ -69,28 +83,29 @@ done
 echo ""
 echo "4. Checking GPU availability..."
 if command -v nvidia-smi &> /dev/null; then
-    GPU_COUNT=$(nvidia-smi --list-gpus | wc -l)
+    GPU_COUNT=$(nvidia-smi --list-gpus 2>/dev/null | wc -l)
     if [ $GPU_COUNT -gt 0 ]; then
         echo -e "${GREEN}✓${NC} Found $GPU_COUNT GPU(s)"
-        nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | while read line; do
+        nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | while read line; do
             echo "  - $line"
         done
     else
-        echo -e "${RED}✗${NC} No GPUs detected"
-        ERRORS=$((ERRORS + 1))
+        echo -e "${YELLOW}⚠${NC} No GPUs detected (SLURM environment may not have GPU allocation)"
+        WARNINGS=$((WARNINGS + 1))
     fi
 else
-    echo -e "${RED}✗${NC} nvidia-smi not found"
-    ERRORS=$((ERRORS + 1))
+    echo -e "${YELLOW}⚠${NC} nvidia-smi not found (may be unavailable in SLURM login node)"
+    WARNINGS=$((WARNINGS + 1))
 fi
 
 # Check PyTorch CUDA
 if python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
     CUDA_VERSION=$(python -c "import torch; print(torch.version.cuda)")
-    echo -e "${GREEN}✓${NC} PyTorch CUDA ${CUDA_VERSION} available"
+    DEVICE_COUNT=$(python -c "import torch; print(torch.cuda.device_count())")
+    echo -e "${GREEN}✓${NC} PyTorch CUDA ${CUDA_VERSION} available (${DEVICE_COUNT} device(s))"
 else
-    echo -e "${RED}✗${NC} PyTorch CUDA not available"
-    ERRORS=$((ERRORS + 1))
+    echo -e "${YELLOW}⚠${NC} PyTorch CUDA not available (expected in SLURM login node, will be available in compute nodes)"
+    WARNINGS=$((WARNINGS + 1))
 fi
 
 # ============================================================================
@@ -260,6 +275,8 @@ if [ $ERRORS -eq 0 ] && [ $WARNINGS -eq 0 ]; then
 elif [ $ERRORS -eq 0 ]; then
     echo -e "${YELLOW}Checks completed with $WARNINGS warning(s) ⚠${NC}"
     echo "Pipeline should work, but check warnings above."
+    echo ""
+    echo "Note: GPU/CUDA warnings are normal on SLURM login nodes and will resolve in compute nodes."
     exit 0
 else
     echo -e "${RED}Checks failed with $ERRORS error(s) and $WARNINGS warning(s) ✗${NC}"
@@ -267,9 +284,9 @@ else
     echo "Please fix the errors above before running the pipeline."
     echo ""
     echo "Common fixes:"
-    echo "  - Install missing packages: pip install torch numpy opencv-python scipy pyyaml"
+    echo "  - Install missing packages: pip install torch numpy opencv-python scipy pyyaml pycolmap trimesh"
     echo "  - Activate conda environment: conda activate multi-tram"
-    echo "  - Check GPU drivers: nvidia-smi"
+    echo "  - Check GPU drivers (on compute node): nvidia-smi"
     echo "  - Create missing directories: mkdir -p data/pretrained_models"
     exit 1
 fi

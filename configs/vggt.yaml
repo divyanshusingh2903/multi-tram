@@ -7,9 +7,9 @@ method: vggt
 device: cuda
 
 # VGGT-specific settings
-vggt_model_path: data/pretrained_models/vggt/model.pth
-max_frames: 100  # Process up to 100 frames at once
-image_size: 512  # Input image size for VGGT
+vggt_model_path: data/pretrained_models/vggt/model.pt
+max_frames: 200  # Process up to 200 frames at once (24GB GPU limit per spec)
+image_size: 518  # Input image size for VGGT (must be 518 for pretrained model)
 
 # DROID-SLAM fallback settings
 fallback_to_droid: true

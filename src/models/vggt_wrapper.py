@@ -1,374 +1,269 @@
 """
-VGGT Wrapper for Camera Estimation
-Wraps the VGGT model for feed-forward camera pose and depth estimation
+VGGT Wrapper for Camera Estimation — Stage 1 primary method (spec §2.3).
 
-Usage Examples:
-    # Load default model from HuggingFace Hub
-    vggt = VGGTWrapper()
+Correct VGGT API (confirmed from thirdparty/vggt demo scripts):
+  - Input:  images (S, 3, 518, 518) float32, ImageNet-normalised, no batch dim.
+            Model internally handles the batch dimension.
+  - Output: dict with keys pose_enc (1,S,9), depth (1,S,H,W,1),
+            depth_conf (1,S,H,W), world_points (1,S,H,W,3).
 
-    # Load custom checkpoint
-    vggt = VGGTWrapper(model_path='path/to/checkpoint.pt')
-
-    # Process video frames (T, H, W, 3) in [0, 255]
-    results = vggt.estimate_cameras(frames)
-
-    # Results dict contains:
-    # - poses: (T, 4, 4) camera poses
-    # - intrinsics: (T, 3, 3) camera intrinsics
-    # - depths: (T, H, W) depth maps
-    # - point_cloud: (N, 3) 3D points
-    # - point_colors: (N, 3) RGB colors
+Preprocessing: resize to 518×518, normalise with ImageNet mean/std.
+Chunking: simple concatenation for sequences > max_frames.
+  TODO: replace with PnP-based chunk alignment using overlapping keyframes.
+  Until then, keep max_frames=200 so chunking only triggers for long sequences.
 """
-import torch
-import numpy as np
-from pathlib import Path
 import sys
-from typing import Dict, Tuple
+import numpy as np
 import cv2
+import torch
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+# ImageNet statistics (matches VGGT's load_and_preprocess_images)
+_IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+_IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+_VGGT_IMG_SIZE = 518  # hardcoded in pretrained model architecture
+
 
 class VGGTWrapper:
-    """Wrapper for VGGT (Video Geometry Guidance Transformer)"""
+    """
+    Wrapper for VGGT (Visual Geometry Grounded Transformer).
 
-    def __init__(self,  model_path: str = None, device: str = 'cuda', max_frames: int = 100, image_size: int = 518):
+    Returns metric-scale camera poses, depth maps, point maps, and
+    depth-confidence maps from a single feed-forward pass.
+    """
+
+    def __init__(
+        self,
+        model_path: Optional[str] = None,
+        device: str = "cuda",
+        max_frames: int = 200,
+        image_size: int = None,  # kept for API compatibility, always 518
+    ):
         """
-        Initialize VGGT wrapper
-
         Args:
-            model_path: Path to pretrained VGGT model checkpoint (.pt file).
-                       If None, will use the default HuggingFace model.
-            device: Device to run on ('cuda' or 'cpu')
-            max_frames: Maximum number of frames to process at once
-            image_size: Input image size for VGGT (should be 518 for default model)
+            model_path: Local .pt checkpoint. If None, downloads from HuggingFace.
+            device:     "cuda" or "cpu".
+            max_frames: Frames per chunk (spec default: 200).
+            image_size: Deprecated — VGGT always uses 518×518.
         """
         self.device = device
         self.max_frames = max_frames
-        self.image_size = image_size
+        self.image_size = _VGGT_IMG_SIZE
 
-        # Add VGGT to path
-        thirdparty_path = Path(__file__).parent.parent.parent / 'thirdparty' / 'vggt'
-        sys.path.insert(0, str(thirdparty_path))
+        if image_size is not None and image_size != _VGGT_IMG_SIZE:
+            print(f"[VGGT] Warning: image_size={image_size} ignored; model requires 518×518.")
 
-        try:
-            from vggt.models.vggt import VGGT
+        # Add VGGT to import path
+        vggt_root = Path(__file__).parent.parent.parent / "thirdparty" / "vggt"
+        if str(vggt_root) not in sys.path:
+            sys.path.insert(0, str(vggt_root))
 
-            print(f"[VGGT] Initializing VGGT model...")
-            self.model = VGGT(img_size=image_size).to(device)
+        from vggt.models.vggt import VGGT
+        from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
-            # Load model weights
-            if model_path is not None:
-                # Load from local checkpoint file
-                print(f"[VGGT] Loading model from local file: {model_path}")
-                if not Path(model_path).exists():
-                    raise FileNotFoundError(f"Model checkpoint not found at {model_path}")
-                state_dict = torch.load(model_path, map_location=device)
-                self.model.load_state_dict(state_dict)
-            else:
-                # Load from HuggingFace Hub
-                print(f"[VGGT] Loading model from HuggingFace Hub...")
-                hf_url = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
-                state_dict = torch.hub.load_state_dict_from_url(hf_url, map_location=device)
-                self.model.load_state_dict(state_dict)
+        print(f"[VGGT] Initialising model (img_size=518)...")
+        self.model = VGGT(img_size=518).to(device)
+        self._pose_dec = pose_encoding_to_extri_intri
 
-            self.model.eval()
-            print("[VGGT] Model loaded successfully")
+        if model_path is not None:
+            p = Path(model_path)
+            if not p.exists():
+                raise FileNotFoundError(f"VGGT checkpoint not found: {model_path}")
+            print(f"[VGGT] Loading from local file: {model_path}")
+            state = torch.load(model_path, map_location=device)
+        else:
+            _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
+            print("[VGGT] Downloading checkpoint from HuggingFace Hub...")
+            state = torch.hub.load_state_dict_from_url(_URL, map_location=device)
 
-        except Exception as e:
-            print(f"[VGGT] Error loading model: {e}")
-            raise
+        self.model.load_state_dict(state)
+        self.model.eval()
+        print("[VGGT] Model ready.")
 
-    def preprocess_frames(self, frames: np.ndarray) -> torch.Tensor:
-        """
-        Preprocess video frames for VGGT
+        # Choose dtype based on GPU capability
+        if device == "cuda" and torch.cuda.is_available():
+            cap = torch.cuda.get_device_capability()[0]
+            self._dtype = torch.bfloat16 if cap >= 8 else torch.float16
+        else:
+            self._dtype = torch.float32
 
-        Args:
-            frames: numpy array of shape (T, H, W, 3) in [0, 255]
-
-        Returns:
-            Preprocessed frames as tensor (T, 3, H, W) normalized to [0, 1]
-        """
-        T, H, W, C = frames.shape
-
-        # Resize to model input size
-        resized_frames = []
-        for i in range(T):
-            frame = cv2.resize(frames[i], (self.image_size, self.image_size))
-            resized_frames.append(frame)
-        resized_frames = np.stack(resized_frames, axis=0)
-
-        # Convert to tensor and normalize
-        frames_tensor = torch.from_numpy(resized_frames).float()
-        frames_tensor = frames_tensor.permute(0, 3, 1, 2)  # (T, 3, H, W)
-        frames_tensor = frames_tensor / 255.0  # Normalize to [0, 1]
-
-        # VGGT expects images in [0, 1] range (no further normalization needed)
-        # The model applies normalization internally if needed
-
-        return frames_tensor.to(self.device)
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     @torch.no_grad()
     def estimate_cameras(self, frames: np.ndarray) -> Dict:
         """
-        Estimate camera poses and depths from video frames
+        Estimate camera poses and auxiliary outputs from video frames.
 
         Args:
-            frames: numpy array of shape (T, H, W, 3) in [0, 255]
+            frames: (T, H, W, 3) uint8 RGB.
 
         Returns:
-            Dictionary containing:
-                - 'poses': Camera poses (T, 4, 4) - camera-to-world transforms
-                - 'intrinsics': Camera intrinsics (T, 3, 3)
-                - 'depths': Predicted depth maps (T, H, W)
-                - 'point_cloud': 3D point cloud (N, 3)
-                - 'point_colors': Point colors (N, 3)
+            dict with keys:
+              poses          (T, 4, 4) world-to-camera extrinsics
+              intrinsics     (T, 3, 3) camera intrinsics (scaled to original res)
+              depths         (T, H, W) metric depth in metres
+              depth_conf     (T, H, W) depth confidence [0, 1]
+              world_points   (T, H, W, 3) 3D point map in world frame
+              track_features (T, C, H, W) dense tracking features  [TODO: stub]
+              confidence     (T,)  per-frame confidence (mean depth_conf)
+              original_size  (H, W) tuple
+              method_used    "vggt"
         """
-        print(f"[VGGT] Processing {len(frames)} frames")
+        T = len(frames)
+        print(f"[VGGT] Processing {T} frames...")
 
-        # Split into chunks if too many frames
-        if len(frames) > self.max_frames:
-            print(f"[VGGT] Splitting into chunks of {self.max_frames} frames")
+        if T > self.max_frames:
+            print(f"[VGGT] Chunking into segments of {self.max_frames} frames.")
             return self._process_chunks(frames)
 
-        # Preprocess
-        frames_tensor = self.preprocess_frames(frames)
+        return self._run_single_chunk(frames)
 
-        # Run VGGT
-        try:
-            # Add sequence dimension if needed: (T, 3, H, W) -> (1, T, 3, H, W)
-            if frames_tensor.dim() == 4:
-                frames_tensor = frames_tensor.unsqueeze(0)
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-            with torch.cuda.amp.autocast(dtype=torch.float16):
-                outputs = self.model(frames_tensor)
-
-            # Extract outputs from model
-            # The model returns pose encoding and depth predictions
-            # We need to decode these appropriately
-
-            # For now, extract the raw outputs
-            # Note: The exact output format depends on model configuration
-            T = frames_tensor.shape[1]
-
-            if isinstance(outputs, dict):
-                # If model returns a dict with predictions
-                pose_enc = outputs.get('pose_enc', outputs.get('poses', None))
-                depths = outputs.get('depth', outputs.get('depths', None))
-
-                if pose_enc is not None:
-                    pose_enc = pose_enc.squeeze(0).cpu().numpy()  # (T, 9)
-                if depths is not None:
-                    depths = depths.squeeze(0).cpu().numpy()  # (T, H, W)
-            else:
-                raise ValueError(f"Unexpected model output format: {type(outputs)}")
-
-            # Default intrinsic matrix (assuming no intrinsic changes)
-            intrinsics = self._estimate_intrinsics(frames.shape[1:3])
-            intrinsics = np.tile(intrinsics[np.newaxis, :, :], (T, 1, 1))
-
-            # Default poses (identity matrices for now - refinement needed)
-            poses = np.tile(np.eye(4)[np.newaxis, :, :], (T, 1, 1))
-
-            # Generate point cloud
-            if depths is not None:
-                point_cloud, point_colors = self._generate_point_cloud(
-                    frames, depths, poses, intrinsics
-                )
-            else:
-                point_cloud = np.zeros((0, 3))
-                point_colors = np.zeros((0, 3))
-
-            results = {
-                'poses': poses,
-                'intrinsics': intrinsics,
-                'depths': depths,
-                'point_cloud': point_cloud,
-                'point_colors': point_colors,
-                'original_size': frames.shape[1:3]
-            }
-
-            print(f"[VGGT] Camera estimation complete")
-            print(f"  - Poses: {poses.shape}")
-            if depths is not None:
-                print(f"  - Depths: {depths.shape}")
-            print(f"  - Point cloud: {point_cloud.shape}")
-
-            return results
-
-        except Exception as e:
-            print(f"[VGGT] Error during inference: {e}")
-            raise
-
-    def _estimate_intrinsics(self, frame_shape: Tuple[int, int]) -> np.ndarray:
+    def _preprocess(self, frames: np.ndarray) -> torch.Tensor:
         """
-        Estimate camera intrinsic matrix from frame shape
-        Assumes perspective camera with square pixels and principal point at image center
-
-        Args:
-            frame_shape: Tuple of (height, width)
-
-        Returns:
-            intrinsic matrix (3, 3) in OpenCV format
+        (T, H, W, 3) uint8 → (T, 3, 518, 518) float32 on device, ImageNet-normalised.
         """
-        H, W = frame_shape
+        T = len(frames)
+        out = np.empty((T, _VGGT_IMG_SIZE, _VGGT_IMG_SIZE, 3), dtype=np.float32)
+        for i, frame in enumerate(frames):
+            resized = cv2.resize(frame, (_VGGT_IMG_SIZE, _VGGT_IMG_SIZE))
+            out[i] = (resized.astype(np.float32) / 255.0 - _IMAGENET_MEAN) / _IMAGENET_STD
+        # (T, H, W, 3) → (T, 3, H, W)
+        tensor = torch.from_numpy(out).permute(0, 3, 1, 2).to(self.device)
+        return tensor
 
-        # Focal length estimation based on image size
-        # Assuming 50-degree field of view as default
-        focal_length = max(H, W) / (2 * np.tan(np.radians(25)))
+    def _run_single_chunk(self, frames: np.ndarray) -> Dict:
+        H_orig, W_orig = frames.shape[1], frames.shape[2]
+        images = self._preprocess(frames)   # (T, 3, 518, 518)
 
-        # Principal point at image center
-        cx = W / 2.0
-        cy = H / 2.0
+        with torch.amp.autocast(device_type=self.device if self.device == "cuda" else "cpu",
+                                dtype=self._dtype):
+            preds = self.model(images)      # model handles batch dim internally
 
-        # Build intrinsic matrix
-        K = np.array([
-            [focal_length, 0, cx],
-            [0, focal_length, cy],
-            [0, 0, 1]
-        ], dtype=np.float32)
+        # --- Pose decoding ---
+        pose_enc = preds["pose_enc"]  # may be (S, 9) or (1, S, 9)
+        if pose_enc.dim() == 2:
+            pose_enc = pose_enc.unsqueeze(0)  # → (1, S, 9)
 
-        return K
-
-    def _process_chunks(self, frames: np.ndarray) -> Dict:
-        """Process video in chunks for long sequences"""
-        all_poses = []
-        all_depths = []
-        all_intrinsics = []
-
-        for start_idx in range(0, len(frames), self.max_frames):
-            end_idx = min(start_idx + self.max_frames, len(frames))
-            chunk = frames[start_idx:end_idx]
-
-            print(f"[VGGT] Processing frames {start_idx}-{end_idx}")
-            chunk_results = self.estimate_cameras(chunk)
-
-            all_poses.append(chunk_results['poses'])
-            all_depths.append(chunk_results['depths'])
-            all_intrinsics.append(chunk_results['intrinsics'])
-
-        # Concatenate results
-        poses = np.concatenate(all_poses, axis=0)
-        depths = np.concatenate(all_depths, axis=0)
-        intrinsics = np.concatenate(all_intrinsics, axis=0)
-
-        # Generate combined point cloud
-        point_cloud, point_colors = self._generate_point_cloud(
-            frames, depths, poses, intrinsics
+        extrinsics, intrinsics_vggt = self._pose_dec(
+            pose_enc, image_size_hw=(_VGGT_IMG_SIZE, _VGGT_IMG_SIZE)
         )
+        # extrinsics: (1, S, 3, 4) → (S, 3, 4)
+        ext_np = extrinsics.squeeze(0).cpu().float().numpy()
+        intr_np = intrinsics_vggt.squeeze(0).cpu().float().numpy()  # (S, 3, 3)
+
+        S = ext_np.shape[0]
+        poses = np.zeros((S, 4, 4), dtype=np.float32)
+        poses[:, :3, :] = ext_np
+        poses[:, 3, 3] = 1.0
+
+        # Scale intrinsics from 518×518 back to original resolution
+        sx, sy = W_orig / _VGGT_IMG_SIZE, H_orig / _VGGT_IMG_SIZE
+        intr_scaled = intr_np.copy()
+        intr_scaled[:, 0, 0] *= sx; intr_scaled[:, 0, 2] *= sx
+        intr_scaled[:, 1, 1] *= sy; intr_scaled[:, 1, 2] *= sy
+
+        # --- Depth ---
+        # shape: (1, S, H, W, 1) or (S, H, W, 1)
+        depth_raw = preds["depth"]
+        if depth_raw.dim() == 5:
+            depth_raw = depth_raw.squeeze(0)   # (S, H, W, 1)
+        depth_np = depth_raw.squeeze(-1).cpu().float().numpy()   # (S, H518, W518)
+        depth_np = self._resize_maps(depth_np, H_orig, W_orig)   # (S, H, W)
+
+        # --- Depth confidence ---
+        dconf_raw = preds["depth_conf"]
+        if dconf_raw.dim() == 4:
+            dconf_raw = dconf_raw.squeeze(0)   # (S, H, W)
+        dconf_np = dconf_raw.cpu().float().numpy()
+        dconf_np = self._resize_maps(dconf_np, H_orig, W_orig)   # (S, H, W)
+
+        # --- World points (point maps) ---
+        wp_raw = preds["world_points"]
+        if wp_raw.dim() == 5:
+            wp_raw = wp_raw.squeeze(0)   # (S, H, W, 3)
+        wp_np = wp_raw.cpu().float().numpy()   # (S, H518, W518, 3)
+        # resize along spatial dims
+        wp_resized = np.stack([
+            cv2.resize(wp_np[t], (W_orig, H_orig), interpolation=cv2.INTER_LINEAR)
+            for t in range(S)
+        ])  # (S, H, W, 3)
+
+        # --- Track features (spec §2.3 T_i) ---
+        # TODO: extract DPT intermediate features from TrackHead.feature_extractor.
+        # For now, save a zero-filled placeholder so downstream code can run.
+        # Shape should be (T, 128, H, W) once implemented.
+        track_features = np.zeros((S, 128, H_orig, W_orig), dtype=np.float32)
+
+        # --- Per-frame confidence (mean depth_conf) ---
+        confidence = dconf_np.mean(axis=(1, 2))  # (S,)
 
         return {
-            'poses': poses,
-            'intrinsics': intrinsics,
-            'depths': depths,
-            'point_cloud': point_cloud,
-            'point_colors': point_colors,
-            'original_size': frames.shape[1:3]
+            "poses": poses,
+            "intrinsics": intr_scaled,
+            "depths": depth_np,
+            "depth_conf": dconf_np,
+            "world_points": wp_resized,
+            "track_features": track_features,
+            "confidence": confidence,
+            "original_size": (H_orig, W_orig),
+            "method_used": "vggt",
         }
 
-    def _generate_point_cloud(self, frames: np.ndarray, depths: np.ndarray, poses: np.ndarray, intrinsics: np.ndarray,
-                              subsample: int = 4) -> Tuple[np.ndarray, np.ndarray]:
+    def _process_chunks(self, frames: np.ndarray) -> Dict:
         """
-        Generate 3D point cloud from depth maps and camera poses
+        Process a long video in non-overlapping chunks of max_frames.
 
-        Args:
-            frames: RGB frames (T, H, W, 3)
-            depths: Depth maps (T, H, W)
-            poses: Camera poses (T, 4, 4)
-            intrinsics: Camera intrinsics (T, 3, 3)
-            subsample: Subsample factor for efficiency
-
-        Returns:
-            point_cloud: (N, 3) world coordinates
-            point_colors: (N, 3) RGB colors
+        TODO: Replace the simple concatenation below with PnP-based chunk alignment
+        using overlapping keyframes to remove the coordinate discontinuity at chunk
+        boundaries. Acceptable limitation for sequences < 200 frames where chunking
+        is not triggered.
         """
-        T, H, W = depths.shape
+        all_poses, all_intr, all_depths, all_dconf = [], [], [], []
+        all_wp, all_tf, all_conf = [], [], []
 
-        all_points = []
-        all_colors = []
+        for start in range(0, len(frames), self.max_frames):
+            chunk = frames[start:start + self.max_frames]
+            print(f"[VGGT] Chunk {start}–{start + len(chunk) - 1}")
+            res = self._run_single_chunk(chunk)
 
-        # Process every Nth frame for efficiency
-        for t in range(0, T, max(1, T // 10)):
-            depth = depths[t]
-            pose = poses[t]
-            K = intrinsics[t]
-            frame = frames[t]
+            all_poses.append(res["poses"])
+            all_intr.append(res["intrinsics"])
+            all_depths.append(res["depths"])
+            all_dconf.append(res["depth_conf"])
+            all_wp.append(res["world_points"])
+            all_tf.append(res["track_features"])
+            all_conf.append(res["confidence"])
 
-            # Resize depth to match frame size if needed
-            if depth.shape != frame.shape[:2]:
-                depth = cv2.resize(depth, (frame.shape[1], frame.shape[0]))
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
-            # Create pixel grid
-            h, w = depth.shape
-            y, x = np.mgrid[0:h:subsample, 0:w:subsample]
+        H, W = frames.shape[1], frames.shape[2]
+        return {
+            "poses": np.concatenate(all_poses, axis=0),
+            "intrinsics": np.concatenate(all_intr, axis=0),
+            "depths": np.concatenate(all_depths, axis=0),
+            "depth_conf": np.concatenate(all_dconf, axis=0),
+            "world_points": np.concatenate(all_wp, axis=0),
+            "track_features": np.concatenate(all_tf, axis=0),
+            "confidence": np.concatenate(all_conf, axis=0),
+            "original_size": (H, W),
+            "method_used": "vggt",
+        }
 
-            # Sample depth and colors
-            z = depth[y, x]
-            colors = frame[y, x]
-
-            # Filter valid depths
-            valid = (z > 0) & (z < 100)  # Reasonable depth range
-            x, y, z = x[valid], y[valid], z[valid]
-            colors = colors[valid]
-
-            if len(x) == 0:
-                continue
-
-            # Unproject to camera space
-            fx, fy = K[0, 0], K[1, 1]
-            cx, cy = K[0, 2], K[1, 2]
-
-            X = (x - cx) * z / fx
-            Y = (y - cy) * z / fy
-            Z = z
-
-            # Stack to homogeneous coordinates
-            points_cam = np.stack([X, Y, Z, np.ones_like(X)], axis=1)
-
-            # Transform to world coordinates
-            pose_inv = np.linalg.inv(pose)
-            points_world = (pose_inv @ points_cam.T).T[:, :3]
-
-            all_points.append(points_world)
-            all_colors.append(colors)
-
-        if len(all_points) == 0:
-            return np.zeros((0, 3)), np.zeros((0, 3))
-
-        point_cloud = np.concatenate(all_points, axis=0)
-        point_colors = np.concatenate(all_colors, axis=0)
-
-        return point_cloud, point_colors
-
-    def visualize_cameras(self, poses: np.ndarray, output_path: str):
-        """Visualize camera trajectory"""
-        import matplotlib.pyplot as plt
-        from mpl_toolkits.mplot3d import Axes3D
-
-        # Extract camera centers
-        centers = []
-        for pose in poses:
-            pose_inv = np.linalg.inv(pose)
-            center = pose_inv[:3, 3]
-            centers.append(center)
-        centers = np.array(centers)
-
-        # Plot
-        fig = plt.figure(figsize=(12, 8))
-        ax = fig.add_subplot(111, projection='3d')
-
-        # Plot trajectory
-        ax.plot(centers[:, 0], centers[:, 1], centers[:, 2],
-                'b-', linewidth=2, label='Camera trajectory')
-        ax.scatter(centers[0, 0], centers[0, 1], centers[0, 2],
-                   c='g', s=100, marker='o', label='Start')
-        ax.scatter(centers[-1, 0], centers[-1, 1], centers[-1, 2],
-                   c='r', s=100, marker='x', label='End')
-
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
-        ax.legend()
-        ax.set_title('Camera Trajectory')
-
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
-        plt.close()
-
-        print(f"[VGGT] Camera visualization saved to {output_path}")
+    @staticmethod
+    def _resize_maps(maps: np.ndarray, H: int, W: int) -> np.ndarray:
+        """Resize (S, h, w) or (S, h, w, C) maps to (S, H, W[, C])."""
+        S = maps.shape[0]
+        if maps.shape[1] == H and maps.shape[2] == W:
+            return maps
+        out = []
+        for t in range(S):
+            out.append(cv2.resize(maps[t], (W, H), interpolation=cv2.INTER_LINEAR))
+        return np.stack(out)

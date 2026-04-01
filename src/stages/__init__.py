@@ -1,26 +1,20 @@
 """
-Stage implementations for multi-TRAM pipeline
+Stage implementations for multi-TRAM pipeline.
 
-Stages:
-1. Scene Understanding & Camera Estimation (VGGT + optional DROID-SLAM fallback)
-2. Multi-Person Detection, Segmentation & Tracking
-3. Per-Person 3D Pose & Shape Estimation (VIMO)
-4. World-Space Transformation
-5. (Optional) Multi-Person Refinement via SLAHMR Optimization
-6. Post-Processing & Quality Metrics
-7. Visualization & Export
+Stage 1: Camera estimation (VGGT primary, DROID-SLAM fallback)
+Stage 2: Multi-person detection & tracking (PHALP+ + world-frame correction)
+Stage 3: Per-person pose estimation (VIMO)
+Stage 4: World-frame transformation
+Stage 5: Optional multi-person refinement (SLAHMR)
 """
 
-from .stage1_camera import (
-    Stage1Pipeline,
-    Stage1Config,
-    VGGTModel,
-    create_stage1_pipeline,
-)
+from .stage1_camera import run_camera_estimation, load_video, save_results
+from .stage2_tracking import run_tracking, Track
 
 __all__ = [
-    "Stage1Pipeline",
-    "Stage1Config",
-    "VGGTModel",
-    "create_stage1_pipeline",
+    "run_camera_estimation",
+    "load_video",
+    "save_results",
+    "run_tracking",
+    "Track",
 ]

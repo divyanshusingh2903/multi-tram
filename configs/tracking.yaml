@@ -1,0 +1,38 @@
+# Stage 2: World-Frame Multi-Person Tracking Configuration
+# Uses YOLO for detection + custom world-frame tracking
+
+# YOLO Detection Settings
+yolo_model: 'yolov8s'  # Options: yolov8n, yolov8s, yolov8m, yolov11n, yolov11s
+conf_threshold: 0.3    # Detection confidence threshold (0.0-1.0)
+
+# ReID Feature Extraction
+reid_backbone: 'resnet50'  # Options: resnet50, osnet, simple
+
+# Device
+device: 'cuda'  # cuda or cpu
+
+# Tracking Parameters
+max_age: 30        # Max frames to keep track without detection
+min_hits: 3        # Min detections before confirming track
+
+# Cost Function Weights (must sum to ~1.0)
+alpha: 0.4   # Motion cost weight (world-frame distance)
+beta: 0.4    # Appearance cost weight (ReID features)
+gamma: 0.2   # Geometric cost weight (VGGT point tracks)
+
+# Thresholds
+motion_threshold: 2.0        # Max motion distance for association (meters)
+appearance_threshold: 0.5    # Max appearance distance (cosine)
+
+# World-Frame Filtering (optional)
+world_bounds:
+  x: [-20, 20]    # X range in meters
+  y: [-2, 3]      # Y range in meters (height)
+  z: [0, 50]      # Z range in meters (depth)
+
+# Performance
+batch_size: 8    # Batch size for ReID feature extraction
+
+# Output
+save_visualizations: true
+visualization_fps: 30

@@ -1,17 +1,66 @@
 name: multi-tram
+
 channels:
   - conda-forge
   - defaults
+
 dependencies:
   - python=3.10
   - pip
+  - setuptools<81
+  - wheel
+
   - pip:
+      # --- Core CV / ML (PINNED for compatibility) ---
+      - torch==2.11.0
+      - torchvision==0.26.0
+      - --find-links https://download.openmmlab.com/mmcv/dist/cu118/torch2.0/index.html
+      - mmcv==2.0.0
+
+      # --- Core scientific stack ---
+      - numpy>=2.0
+      - scipy
+      - pandas>=2.0.0
+      - matplotlib
+
+      # --- Vision / geometry ---
       - opencv-python
+      - scikit-image
+      - open3d
       - pycolmap
       - trimesh
-      - numpy
-      - torch
-      - torchvision
-      - matplotlib
+      - pyrender
+      - smplx
+
+      # --- ML / utils ---
+      - scikit-learn
+      - joblib
+      - tqdm
+      - cython
+      - dill
+
+      # --- Deep learning ecosystem ---
+      - huggingface_hub
+      - safetensors
+      - einops
+      - timm==0.4.9
+
+      # --- Config / infra ---
+      - hydra-core
+      - omegaconf
       - pyyaml
-      - scipy
+
+      # --- Tracking / evaluation ---
+      - motmetrics
+      - xtcocotools
+
+      # --- IO / media ---
+      - Pillow
+      - imageio-ffmpeg
+      - gdown
+
+      # --- Logging / monitoring ---
+      - tensorboard
+
+      # --- Detection ---
+      - ultralytics

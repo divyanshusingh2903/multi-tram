@@ -19,20 +19,21 @@ Usage Examples:
     # - point_cloud: (N, 3) 3D points
     # - point_colors: (N, 3) RGB colors
 """
-import numpy as np
-from pathlib import Path
+
 import sys
-from typing import Dict, Tuple
+from pathlib import Path
+from typing import Dict
+
 import cv2
-import torch
+import numpy as np
+
 
 class DROIDSLAMWrapper:
     """Wrapper for DROID-SLAM as fallback camera estimator"""
 
-    def __init__(self,
-                 weights_path: str = None,
-                 device: str = 'cuda',
-                 buffer_size: int = 512):
+    def __init__(
+        self, weights_path: str = None, device: str = "cuda", buffer_size: int = 512
+    ):
         """
         Initialize DROID-SLAM wrapper
 
@@ -47,21 +48,25 @@ class DROIDSLAMWrapper:
         self.slam = None
 
         # Add DROID-SLAM to path
-        tram_path = Path(__file__).parent.parent.parent / 'thirdparty' / 'tram'
-        droid_path = tram_path / 'thirdparty' / 'DROID-SLAM' / 'droid_slam'
+        tram_path = Path(__file__).parent.parent.parent / "thirdparty" / "tram"
+        droid_path = tram_path / "thirdparty" / "DROID-SLAM" / "droid_slam"
         sys.path.insert(0, str(droid_path))
 
         try:
             # Try to import DROID from TRAM
             try:
                 from droid import Droid
+
                 print("[DROID-SLAM] Successfully imported DROID from TRAM")
             except ImportError:
                 # Fall back to looking for droid_slam module
-                droid_slam_path = tram_path / 'thirdparty' / 'DROID-SLAM'
+                droid_slam_path = tram_path / "thirdparty" / "DROID-SLAM"
                 sys.path.insert(0, str(droid_slam_path))
                 from droid_slam.droid import Droid
-                print("[DROID-SLAM] Successfully imported DROID from DROID-SLAM directory")
+
+                print(
+                    "[DROID-SLAM] Successfully imported DROID from DROID-SLAM directory"
+                )
 
             print("[DROID-SLAM] Initializing SLAM system")
 
@@ -69,9 +74,9 @@ class DROIDSLAMWrapper:
             if weights_path is None:
                 # Search for weights in common locations
                 possible_paths = [
-                    droid_path / 'droid.pth',
-                    tram_path / 'thirdparty' / 'DROID-SLAM' / 'droid.pth',
-                    Path.home() / '.cache' / 'droid' / 'droid.pth',
+                    droid_path / "droid.pth",
+                    tram_path / "thirdparty" / "DROID-SLAM" / "droid.pth",
+                    Path.home() / ".cache" / "droid" / "droid.pth",
                 ]
 
                 for p in possible_paths:
@@ -96,7 +101,9 @@ class DROIDSLAMWrapper:
 
         except Exception as e:
             print(f"[DROID-SLAM] Error initializing: {e}")
-            print(f"[DROID-SLAM] Make sure TRAM/DROID-SLAM is properly installed in thirdparty/")
+            print(
+                f"[DROID-SLAM] Make sure TRAM/DROID-SLAM is properly installed in thirdparty/"
+            )
             raise
 
     def estimate_cameras(self, frames: np.ndarray) -> Dict:
@@ -139,35 +146,37 @@ class DROIDSLAMWrapper:
                 self.slam.track(t, gray)
 
                 if (t + 1) % max(1, T // 10) == 0:
-                    print(f"[DROID-SLAM] Processed {t+1}/{T} frames")
+                    print(f"[DROID-SLAM] Processed {t + 1}/{T} frames")
 
             # Finalize and extract results
             print("[DROID-SLAM] Finalizing reconstruction...")
             self.slam.terminate()
 
             # Get camera poses
-            if hasattr(self.slam, 'poses') and self.slam.poses is not None:
-                poses = self.slam.poses.detach().cpu().numpy()  # (T, 7) - quaternion + translation
+            if hasattr(self.slam, "poses") and self.slam.poses is not None:
+                poses = (
+                    self.slam.poses.detach().cpu().numpy()
+                )  # (T, 7) - quaternion + translation
                 poses_matrix = self._se3_to_matrix(poses)  # Convert to (T, 4, 4)
             else:
                 # Fallback to identity matrices if poses not available
                 poses_matrix = np.tile(np.eye(4)[np.newaxis, :, :], (T, 1, 1))
-                print("[DROID-SLAM] Warning: Could not extract poses, using identity matrices")
+                print(
+                    "[DROID-SLAM] Warning: Could not extract poses, using identity matrices"
+                )
 
             # Get intrinsics (DROID uses fixed intrinsics)
             fx = W * 0.8  # Approximate focal length based on width
             fy = W * 0.8
             cx = W / 2.0
             cy = H / 2.0
-            intrinsics = np.array([
-                [fx, 0, cx],
-                [0, fy, cy],
-                [0, 0, 1]
-            ], dtype=np.float32)
+            intrinsics = np.array(
+                [[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32
+            )
             intrinsics = np.stack([intrinsics] * T, axis=0)
 
             # Get 3D points (sparse point cloud from SLAM)
-            if hasattr(self.slam, 'points') and self.slam.points is not None:
+            if hasattr(self.slam, "points") and self.slam.points is not None:
                 points_3d = self.slam.points.detach().cpu().numpy()  # (N, 3)
                 print(f"[DROID-SLAM] Extracted {len(points_3d)} 3D points")
             else:
@@ -176,7 +185,9 @@ class DROIDSLAMWrapper:
 
             # Get point colors
             if len(points_3d) > 0:
-                point_colors = self._get_point_colors(frames, points_3d, poses_matrix, intrinsics)
+                point_colors = self._get_point_colors(
+                    frames, points_3d, poses_matrix, intrinsics
+                )
             else:
                 point_colors = np.zeros((0, 3), dtype=np.uint8)
 
@@ -189,12 +200,12 @@ class DROIDSLAMWrapper:
                 depths = np.zeros((T, H, W), dtype=np.float32)
 
             results = {
-                'poses': poses_matrix,
-                'intrinsics': intrinsics,
-                'depths': depths,
-                'point_cloud': points_3d,
-                'point_colors': point_colors,
-                'original_size': (H, W)
+                "poses": poses_matrix,
+                "intrinsics": intrinsics,
+                "depths": depths,
+                "point_cloud": points_3d,
+                "point_colors": point_colors,
+                "original_size": (H, W),
             }
 
             print(f"[DROID-SLAM] Camera estimation complete")
@@ -225,7 +236,9 @@ class DROIDSLAMWrapper:
         try:
             from scipy.spatial.transform import Rotation
         except ImportError:
-            print("[DROID-SLAM] Warning: scipy not available, using quaternion fallback")
+            print(
+                "[DROID-SLAM] Warning: scipy not available, using quaternion fallback"
+            )
             return self._se3_to_matrix_fallback(poses)
 
         T = len(poses)
@@ -244,7 +257,9 @@ class DROIDSLAMWrapper:
             # Convert quaternion to rotation matrix
             # scipy expects [x, y, z, w], but poses are [w, x, y, z]
             try:
-                rot = Rotation.from_quat([quat[1], quat[2], quat[3], quat[0]]).as_matrix()
+                rot = Rotation.from_quat(
+                    [quat[1], quat[2], quat[3], quat[0]]
+                ).as_matrix()
             except Exception as e:
                 print(f"[DROID-SLAM] Warning: Could not convert quaternion {quat}: {e}")
                 rot = np.eye(3)
@@ -276,16 +291,31 @@ class DROIDSLAMWrapper:
 
             # Quaternion to rotation matrix (basic implementation)
             # Normalize quaternion
-            q_norm = np.sqrt(qw*qw + qx*qx + qy*qy + qz*qz)
+            q_norm = np.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
             if q_norm > 0:
-                qw, qx, qy, qz = qw/q_norm, qx/q_norm, qy/q_norm, qz/q_norm
+                qw, qx, qy, qz = qw / q_norm, qx / q_norm, qy / q_norm, qz / q_norm
 
             # Build rotation matrix from quaternion
-            rot = np.array([
-                [1 - 2*(qy*qy + qz*qz), 2*(qx*qy - qw*qz), 2*(qx*qz + qw*qy)],
-                [2*(qx*qy + qw*qz), 1 - 2*(qx*qx + qz*qz), 2*(qy*qz - qw*qx)],
-                [2*(qx*qz - qw*qy), 2*(qy*qz + qw*qx), 1 - 2*(qx*qx + qy*qy)]
-            ], dtype=np.float32)
+            rot = np.array(
+                [
+                    [
+                        1 - 2 * (qy * qy + qz * qz),
+                        2 * (qx * qy - qw * qz),
+                        2 * (qx * qz + qw * qy),
+                    ],
+                    [
+                        2 * (qx * qy + qw * qz),
+                        1 - 2 * (qx * qx + qz * qz),
+                        2 * (qy * qz - qw * qx),
+                    ],
+                    [
+                        2 * (qx * qz - qw * qy),
+                        2 * (qy * qz + qw * qx),
+                        1 - 2 * (qx * qx + qy * qy),
+                    ],
+                ],
+                dtype=np.float32,
+            )
 
             # Build 4x4 matrix
             poses_matrix[t, :3, :3] = rot
@@ -294,11 +324,13 @@ class DROIDSLAMWrapper:
 
         return poses_matrix
 
-    def _get_point_colors(self,
-                          frames: np.ndarray,
-                          points_3d: np.ndarray,
-                          poses: np.ndarray,
-                          intrinsics: np.ndarray) -> np.ndarray:
+    def _get_point_colors(
+        self,
+        frames: np.ndarray,
+        points_3d: np.ndarray,
+        poses: np.ndarray,
+        intrinsics: np.ndarray,
+    ) -> np.ndarray:
         """
         Get colors for 3D points by projecting to frames
 
@@ -339,11 +371,13 @@ class DROIDSLAMWrapper:
 
         return colors
 
-    def _estimate_depths_from_points(self,
-                                     points_3d: np.ndarray,
-                                     poses: np.ndarray,
-                                     intrinsics: np.ndarray,
-                                     img_size: tuple) -> np.ndarray:
+    def _estimate_depths_from_points(
+        self,
+        points_3d: np.ndarray,
+        poses: np.ndarray,
+        intrinsics: np.ndarray,
+        img_size: tuple,
+    ) -> np.ndarray:
         """
         Create sparse depth maps from 3D points
 

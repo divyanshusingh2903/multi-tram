@@ -1,0 +1,7 @@
+device: cuda
+num_frames_per_batch: 16
+
+# Path to VIMO checkpoint (relative to project root or absolute)
+# Download with: gdown --fuzzy -O thirdparty/tram/data/pretrain/vimo_checkpoint.pth.tar \
+#   "https://drive.google.com/file/d/1fdeUxn_hK4ERGFwuksFpV_-_PHZJuoiW/view?usp=share_link"
+vimo_model_path: thirdparty/tram/data/pretrain/vimo_checkpoint.pth.tar

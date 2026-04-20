@@ -98,7 +98,7 @@ def main():
     print("\n" + "="*80)
     print("STAGE 4 COMPLETED")
     print("="*80)
-    print(f"Transformed {len(results.get('person_results', {}))} people to world space")
+    print(f"Transformed {results.get('num_people', 0)} people to world space")
     print(f"Results saved to: {output_dir}")
     print("="*80 + "\n")
 

@@ -130,7 +130,7 @@ wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8x.pt
 
 The path can be customized in `configs/vggt.yaml` via the `yolo_model_path` key.
 
-**6. Install pip-only dependencies** (SAM 2, detectron2, PHALP+, SLAHMR)
+**6. Install pip-only dependencies** (SAM 2, detectron2, PHALP+, VIMO, SLAHMR)
 
 Several components are not on conda and must be installed via pip. A script handles the full sequence, including version conflict fixes and checkpoint downloads:
 
@@ -144,11 +144,28 @@ bash install_dependencies.sh
 bash install_dependencies.sh --skip-slahmr
 ```
 
-The script is idempotent — safe to re-run if a step failed. It installs:
+The script is idempotent — safe to re-run if a step failed. It installs/downloads:
 - **SAM 2** — pixel-accurate dynamic masks (Stage 1); falls back to bbox masks if absent
 - **detectron2** — PHALP dependency; both installed with `--no-build-isolation` to see existing torch
 - **PHALP+** — multi-person tracker (Stage 2); weights auto-downloaded on first run
+- **VIMO checkpoint** — `thirdparty/tram/data/pretrain/vimo_checkpoint.pth.tar` (~2.8 GB, downloaded via gdown)
 - **SLAHMR** — multi-person refinement (Stage 5; skippable)
+
+If the VIMO download fails during the script, re-run it manually:
+```bash
+gdown -O thirdparty/tram/data/pretrain/vimo_checkpoint.pth.tar \
+  "https://drive.google.com/file/d/1fdeUxn_hK4ERGFwuksFpV_-_PHZJuoiW/view?usp=share_link"
+```
+
+**Model weights summary**
+
+| Checkpoint | Path | How to get |
+|---|---|---|
+| VGGT-1B | `data/pretrained_models/vggt/model.pt` | Hugging Face (Step 4) |
+| YOLOv8x | `yolov8x.pt` | Auto on first run (Step 5) |
+| SAM 2.1 | `checkpoints/sam2/sam2.1_hiera_large.pt` | `install_dependencies.sh` Step 3 |
+| PHALP | auto | Auto on first run |
+| VIMO | `thirdparty/tram/data/pretrain/vimo_checkpoint.pth.tar` | `install_dependencies.sh` Step 6 |
 
 ### Running the Pipeline
 

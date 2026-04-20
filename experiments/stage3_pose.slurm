@@ -66,6 +66,7 @@ OUTPUT_BASE_DIR="./results/multi-tram"
 STAGE1_DIR="${OUTPUT_BASE_DIR}/1_camera_estimation"
 STAGE2_DIR="${OUTPUT_BASE_DIR}/2_tracking"
 CONFIG_FILE="./configs/vimo.yaml"
+VIMO_CHECKPOINT="./thirdparty/tram/data/pretrain/vimo_checkpoint.pth.tar"
 MAX_FRAMES=100
 BATCH_SIZE=8
 
@@ -83,6 +84,16 @@ if [ ! -f "${STAGE2_DIR}/tracks.npz" ]; then
     echo "ERROR: Stage 2 output not found: ${STAGE2_DIR}/tracks.npz"
     exit 1
 fi
+
+# Verify VIMO checkpoint exists
+if [ ! -f "${VIMO_CHECKPOINT}" ]; then
+    echo "ERROR: VIMO checkpoint not found: ${VIMO_CHECKPOINT}"
+    echo "Download it with:"
+    echo "  gdown --fuzzy -O ${VIMO_CHECKPOINT} \\"
+    echo "    'https://drive.google.com/file/d/1fdeUxn_hK4ERGFwuksFpV_-_PHZJuoiW/view?usp=share_link'"
+    exit 1
+fi
+echo "VIMO checkpoint found: ${VIMO_CHECKPOINT}"
 
 # Create output directory
 mkdir -p ${OUTPUT_BASE_DIR}/3_pose_estimation

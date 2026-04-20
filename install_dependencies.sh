@@ -113,12 +113,28 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
-# Step 6: SLAHMR (Stage 5 refinement — optional)
+# Step 6: VIMO checkpoint (Stage 3 pose estimation)
+# ---------------------------------------------------------------------------
+echo "Step 6: VIMO checkpoint..."
+VIMO_CKPT="thirdparty/tram/data/pretrain/vimo_checkpoint.pth.tar"
+if [ ! -f "$VIMO_CKPT" ]; then
+  mkdir -p "$(dirname $VIMO_CKPT)"
+  gdown -O "$VIMO_CKPT" \
+    "https://drive.google.com/file/d/1fdeUxn_hK4ERGFwuksFpV_-_PHZJuoiW/view?usp=share_link" \
+    && echo "  VIMO checkpoint downloaded." \
+    || echo "  WARNING: VIMO download failed — re-run: gdown -O $VIMO_CKPT 'https://drive.google.com/file/d/1fdeUxn_hK4ERGFwuksFpV_-_PHZJuoiW/view?usp=share_link'"
+else
+  echo "  $VIMO_CKPT already present, skipping."
+fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# Step 7: SLAHMR (Stage 5 refinement — optional)
 # ---------------------------------------------------------------------------
 if [ "$SKIP_SLAHMR" = true ]; then
-  echo "Step 6: SLAHMR — skipped (--skip-slahmr)."
+  echo "Step 7: SLAHMR — skipped (--skip-slahmr)."
 else
-  echo "Step 6: SLAHMR (Stage 5 refinement)..."
+  echo "Step 7: SLAHMR (Stage 5 refinement)..."
   if [ ! -d "thirdparty/slahmr" ] || [ -z "$(ls -A thirdparty/slahmr)" ]; then
     echo "  ERROR: thirdparty/slahmr not found. Run first:"
     echo "    git submodule update --init --recursive"
@@ -144,6 +160,7 @@ if [ "$SKIP_SLAHMR" = false ]; then
   python -c "import slahmr;   print('  SLAHMR     OK')" 2>/dev/null || echo "  SLAHMR     FAILED"
 fi
 echo ""
-echo "Done. Model weights that require manual download:"
-echo "  - VGGT:  data/pretrained_models/vggt/model.pt  (see Step 1 above)"
+echo "Done. Model weights summary:"
+echo "  - VGGT:  data/pretrained_models/vggt/model.pt         (see Step 1 above)"
 echo "  - PHALP: auto-downloaded on first run"
+echo "  - VIMO:  thirdparty/tram/data/pretrain/vimo_checkpoint.pth.tar (Step 6)"

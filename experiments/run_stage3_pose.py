@@ -85,7 +85,7 @@ def main():
 
     # Override batch size if specified
     if args.batch_size:
-        config['batch_size'] = args.batch_size
+        config['num_frames_per_batch'] = args.batch_size
 
     # Create output directory
     output_dir = Path(args.output_dir)

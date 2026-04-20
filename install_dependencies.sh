@@ -100,11 +100,13 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "Step 5: PHALP+..."
 if ! python -c "import phalp" 2>/dev/null; then
-  # Install base phalp without [all] to skip neural-renderer-pytorch (requires GPU at build time).
+  # --no-deps skips neural-renderer-pytorch (a hard dep that requires a GPU node to build).
   # neural-renderer is only used for rendering; we disable it via render.enable=False.
-  pip install --no-build-isolation "phalp@git+https://github.com/brjathu/PHALP.git"
-  # Install remaining [all] extras manually (omitting neural-renderer-pytorch)
+  pip install --no-build-isolation --no-deps "phalp@git+https://github.com/brjathu/PHALP.git"
+  # Install remaining deps manually (omitting neural-renderer-pytorch)
   pip install scenedetect[opencv] av pytube
+  pip install --no-build-isolation --no-deps \
+    "hmr2@git+https://github.com/shubham-goel/4D-Humans.git" 2>/dev/null || true
 else
   echo "  PHALP already installed, skipping."
 fi

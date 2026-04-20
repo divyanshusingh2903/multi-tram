@@ -50,7 +50,7 @@ mkdir -p logs
 # ============================================================================
 # CONFIGURE THESE PATHS
 # ============================================================================
-OUTPUT_BASE_DIR="./results/example_video"
+OUTPUT_BASE_DIR="./results/multi-tram"
 STAGE1_DIR="${OUTPUT_BASE_DIR}/1_camera_estimation"
 STAGE3_DIR="${OUTPUT_BASE_DIR}/3_pose_estimation"
 CONFIG_FILE="./configs/world_transform.yaml"

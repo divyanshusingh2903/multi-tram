@@ -61,8 +61,8 @@ MONITOR_PID=$!
 # ============================================================================
 # CONFIGURE THESE PATHS
 # ============================================================================
-VIDEO_PATH="./data/sample-soccer-2.mp4"
-OUTPUT_BASE_DIR="./results/sample-soccer-2"
+VIDEO_PATH="./data/video_1080p.mp4"
+OUTPUT_BASE_DIR="./results/multi-tram"
 STAGE1_DIR="${OUTPUT_BASE_DIR}/1_camera_estimation"
 CONFIG_FILE="./configs/tracking.yaml"
 MAX_FRAMES=100

@@ -61,8 +61,8 @@ MONITOR_PID=$!
 # ============================================================================
 # CONFIGURE THESE PATHS
 # ============================================================================
-VIDEO_PATH="./data/videos/example_video.mp4"
-OUTPUT_BASE_DIR="./results/example_video"
+VIDEO_PATH="./data/video_1080p.mp4"
+OUTPUT_BASE_DIR="./results/multi-tram"
 STAGE1_DIR="${OUTPUT_BASE_DIR}/1_camera_estimation"
 STAGE2_DIR="${OUTPUT_BASE_DIR}/2_tracking"
 CONFIG_FILE="./configs/vimo.yaml"

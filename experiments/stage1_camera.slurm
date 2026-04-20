@@ -60,8 +60,8 @@ MONITOR_PID=$!
 # ============================================================================
 # CONFIGURE THESE PATHS
 # ============================================================================
-VIDEO_PATH="./data/sample-soccer-1.mp4"
-OUTPUT_BASE_DIR="./results/sample-soccer-1"
+VIDEO_PATH="./data/video_1080p.mp4"
+OUTPUT_BASE_DIR="./results/multi-tram"
 CONFIG_FILE="./configs/vggt.yaml"
 MAX_FRAMES=100  # Set to empty string for all frames
 

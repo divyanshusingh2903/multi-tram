@@ -106,12 +106,19 @@ class VIMOWrapper:
 
     def _init_model(self):
         """Initialize HMR_VIMO model."""
+        import os
+        project_root = Path(__file__).parent.parent.parent
+        tram_root = project_root / 'thirdparty' / 'tram'
+
+        # smpl.py uses hardcoded relative paths ("data/smpl/...") so we must
+        # run from thirdparty/tram/ for them to resolve correctly.
+        orig_cwd = os.getcwd()
         try:
+            os.chdir(tram_root)
             _inject_tram_stubs()
             from lib.models import get_hmr_vimo
 
-            # Resolve relative paths against project root
-            project_root = Path(__file__).parent.parent.parent
+            # Resolve checkpoint path (may be relative to project root)
             checkpoint = None
             if self.model_path:
                 p = Path(self.model_path)
@@ -120,6 +127,7 @@ class VIMOWrapper:
                 checkpoint = str(p) if p.exists() else None
                 if not p.exists():
                     print(f"[VIMOWrapper] Checkpoint not found: {p}")
+
             self.model = get_hmr_vimo(checkpoint=checkpoint, device=self.device)
             print(f"[VIMOWrapper] HMR-VIMO loaded"
                   + (f" from {checkpoint}" if checkpoint else " (no checkpoint)"))
@@ -130,6 +138,8 @@ class VIMOWrapper:
         except Exception as e:
             print(f"[VIMOWrapper] Error loading VIMO: {e}")
             self.model = None
+        finally:
+            os.chdir(orig_cwd)
 
     # ------------------------------------------------------------------
     # Primary API

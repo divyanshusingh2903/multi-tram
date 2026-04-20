@@ -357,7 +357,7 @@ def run_pose_estimation(
                   if k.startswith("track_") and k.endswith("_frames")}
 
     # Load per-person masks from Stage 2 masks/ directory
-    stage2_masks_dir = Path(output_dir).parent.parent / "2_tracking" / "masks"
+    stage2_masks_dir = Path(output_dir).parent / "2_tracking" / "masks"
 
     for tid_str in sorted(track_keys, key=int):
         tid = int(tid_str)
@@ -390,6 +390,7 @@ def run_pose_estimation(
     print(f"[Stage3] Estimating pose for {len(track_ids_found)} people: "
           f"{sorted(track_ids_found)}")
 
+    estimator = PoseEstimator(config)
     all_person_poses = []
     start_time = time.time()
 

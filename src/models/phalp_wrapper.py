@@ -132,7 +132,9 @@ class PHALPWrapper:
             print("[PHALPWrapper] Model not available — returning empty results.")
             return {}
 
-        results = self.tracker.track(video_path)
+        # PHALP.track() takes no arguments; video path is set via cfg.video.source
+        self.tracker.cfg.video.source = video_path
+        results = self.tracker.track()
         return self._parse_results(results)
 
     def track_frames(

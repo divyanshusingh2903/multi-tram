@@ -177,9 +177,11 @@ class VIMOWrapper:
             frame_indices = np.arange(T)
 
         import traceback as _tb
-        print(f"[VIMOWrapper] boxes shape={boxes.shape}, "
-              f"boxes[0]={boxes[0] if len(boxes) else 'N/A'}, "
-              f"img_focal={img_focal}, img_center={img_center}")
+        # PHALP stores bboxes as [cx, cy, w, h]; convert to [x1, y1, x2, y2]
+        # which is what TrackDataset / boxes_2_cs expects.
+        cx, cy, w, h = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+        boxes = np.stack([cx - w / 2, cy - h / 2,
+                          cx + w / 2, cy + h / 2], axis=1).astype(np.float32)
         try:
             with torch.no_grad():
                 results = self.model.inference(
@@ -201,7 +203,7 @@ class VIMOWrapper:
 
         except Exception as e:
             print(f"[VIMOWrapper] inference failed: {e}")
-            _tb.print_exc(file=__import__('sys').stdout)
+            _tb.print_exc()
             return self._predict_dummy(T)
 
     # ------------------------------------------------------------------

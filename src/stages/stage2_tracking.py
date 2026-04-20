@@ -41,7 +41,7 @@ class Track:
     start_frame: int
     end_frame: int
     frames: List[int]              # all frame indices where visible
-    bboxes: np.ndarray             # float32 (T_i, 4) [x1,y1,x2,y2]
+    bboxes: np.ndarray             # float32 (T_i, 4) [cx,cy,w,h] — PHALP format
     masks: np.ndarray              # bool    (T_i, H, W) — SAM 2 per-frame mask
     keypoints_2d: np.ndarray       # float32 (T_i, 24, 3)
     smpl_init: Dict                # coarse SMPL from PHALP+ (input to VIMO)
@@ -188,7 +188,12 @@ def run_tracking(
             continue
 
         frame = frames[t]
-        boxes = np.array([trk.bboxes[idx] for trk, idx in active], dtype=np.float32)
+        # PHALP bboxes are [cx, cy, w, h]; SAM2 expects [x1, y1, x2, y2]
+        cxywh = np.array([trk.bboxes[idx] for trk, idx in active], dtype=np.float32)
+        boxes = np.stack([cxywh[:, 0] - cxywh[:, 2] / 2,
+                          cxywh[:, 1] - cxywh[:, 3] / 2,
+                          cxywh[:, 0] + cxywh[:, 2] / 2,
+                          cxywh[:, 1] + cxywh[:, 3] / 2], axis=1)
         inst_masks = sam.segment_boxes(frame, boxes)
 
         for (trk, _), mask in zip(active, inst_masks):

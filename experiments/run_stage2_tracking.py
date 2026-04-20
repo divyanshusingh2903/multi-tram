@@ -96,9 +96,14 @@ def main():
     print(f"[Stage 2] Found camera data: {camera_file}")
 
     # Check for depth maps (optional but recommended)
+    depth_dir = stage1_dir / 'depth_maps'
     depth_file = stage1_dir / 'depth_maps.npz'
-    if depth_file.exists():
+    if depth_dir.exists() and any(depth_dir.iterdir()):
+        print(f"[Stage 2] Found depth maps: {depth_dir} ({len(list(depth_dir.glob('*')))} files)")
+        config['depth_maps_dir'] = str(depth_dir)
+    elif depth_file.exists():
         print(f"[Stage 2] Found depth maps: {depth_file}")
+        config['depth_maps_file'] = str(depth_file)
     else:
         print(f"[Stage 2] Warning: No depth maps found, will use default depths")
 

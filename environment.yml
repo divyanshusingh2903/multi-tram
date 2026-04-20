@@ -64,3 +64,7 @@ dependencies:
 
       # --- Detection ---
       - ultralytics
+
+      # --- Tracking & segmentation (pip-only) ---
+      - "phalp[all]@git+https://github.com/brjathu/PHALP.git"
+      - "git+https://github.com/facebookresearch/sam2.git"

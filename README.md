@@ -145,6 +145,15 @@ wget -P checkpoints/sam2/ \
 
 The checkpoint path is already set in `configs/vggt.yaml` (`sam_checkpoint`, `sam_model`). No further configuration needed.
 
+**7. Install PHALP+** (required for Stage 2 tracking)
+
+PHALP+ is pip-only. It will auto-download its own model weights (ViT + 4DHumans) on first run:
+
+```bash
+conda activate multi-tram
+pip install "phalp[all]@git+https://github.com/brjathu/PHALP.git"
+```
+
 ### Running the Pipeline
 
 **Option 1: Run individual stages (SLURM)**

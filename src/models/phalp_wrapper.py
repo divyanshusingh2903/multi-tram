@@ -63,19 +63,17 @@ class PHALPWrapper:
     # ------------------------------------------------------------------
 
     def _init_model(self, detector_backbone: str):
+        import torch
+        # PHALP checkpoints contain omegaconf/typing internals not in PyTorch
+        # 2.6+'s default safe-globals list. Patch torch.load for the init
+        # scope so every internal load call defaults weights_only=False, then
+        # restore immediately after PHALP(cfg) returns.
+        _orig_load = torch.load
+        def _load_compat(*a, **kw):
+            kw.setdefault("weights_only", False)
+            return _orig_load(*a, **kw)
+        torch.load = _load_compat
         try:
-            import torch
-            import omegaconf.dictconfig
-            import omegaconf.listconfig
-            import omegaconf.base
-            # PyTorch 2.6+ defaults weights_only=True; PHALP checkpoints contain
-            # omegaconf types which must be explicitly allowlisted.
-            torch.serialization.add_safe_globals([
-                omegaconf.dictconfig.DictConfig,
-                omegaconf.listconfig.ListConfig,
-                omegaconf.base.ContainerMetadata,
-            ])
-
             from phalp.trackers.PHALP import PHALP
             from omegaconf import OmegaConf
 
@@ -102,8 +100,7 @@ class PHALPWrapper:
             self.tracker = PHALP(cfg)
 
             if self.model_path:
-                import torch
-                ckpt = torch.load(self.model_path, map_location=self.device)
+                ckpt = torch.load(self.model_path, map_location=self.device, weights_only=False)
                 self.tracker.load_state_dict(ckpt, strict=False)
                 print(f"[PHALPWrapper] Loaded custom weights: {self.model_path}")
             else:
@@ -114,6 +111,8 @@ class PHALPWrapper:
             print("  Install: pip install 'phalp[all]@git+https://github.com/brjathu/PHALP.git'")
         except Exception as e:
             print(f"[PHALPWrapper] Init failed — {e}")
+        finally:
+            torch.load = _orig_load
 
     # ------------------------------------------------------------------
     # Public API (spec §3.2)

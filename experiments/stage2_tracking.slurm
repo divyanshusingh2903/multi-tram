@@ -95,7 +95,7 @@ python experiments/run_stage2_tracking.py \
     --output_dir "${OUTPUT_BASE_DIR}/2_tracking" \
     --config "${CONFIG_FILE}" \
     --max_frames ${MAX_FRAMES} \
-    --confidence_threshold ${CONFIDENCE_THRESHOLD}
+    --conf_threshold ${CONFIDENCE_THRESHOLD}
 
 EXIT_CODE=$?
 

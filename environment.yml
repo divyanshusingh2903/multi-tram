@@ -66,5 +66,8 @@ dependencies:
       - ultralytics
 
       # --- Tracking & segmentation (pip-only) ---
-      - "phalp[all]@git+https://github.com/brjathu/PHALP.git"
+      # detectron2 must be installed before phalp, with --no-build-isolation
+      # so its setup.py can find the already-installed torch:
+      #   pip install --no-build-isolation git+https://github.com/facebookresearch/detectron2.git
+      #   pip install "phalp[all]@git+https://github.com/brjathu/PHALP.git"
       - "git+https://github.com/facebookresearch/sam2.git"

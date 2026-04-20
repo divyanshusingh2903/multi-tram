@@ -130,29 +130,25 @@ wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8x.pt
 
 The path can be customized in `configs/vggt.yaml` via the `yolo_model_path` key.
 
-**6. Install SAM 2 and download checkpoint** (optional but recommended)
+**6. Install pip-only dependencies** (SAM 2, detectron2, PHALP+, SLAHMR)
 
-SAM 2 produces pixel-accurate dynamic masks in Stage 1. Without it, the pipeline falls back to coarser dilated bounding-box masks. SAM 2 is pip-only and can be installed directly into the conda environment:
-
-```bash
-conda activate multi-tram
-pip install git+https://github.com/facebookresearch/sam2.git
-
-mkdir -p checkpoints/sam2
-wget -P checkpoints/sam2/ \
-  "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt"
-```
-
-The checkpoint path is already set in `configs/vggt.yaml` (`sam_checkpoint`, `sam_model`). No further configuration needed.
-
-**7. Install PHALP+** (required for Stage 2 tracking)
-
-PHALP+ is pip-only. It will auto-download its own model weights (ViT + 4DHumans) on first run:
+Several components are not on conda and must be installed via pip. A script handles the full sequence, including version conflict fixes and checkpoint downloads:
 
 ```bash
 conda activate multi-tram
-pip install "phalp[all]@git+https://github.com/brjathu/PHALP.git"
+
+# Full install (all stages)
+bash install_dependencies.sh
+
+# Skip SLAHMR if you only need Stages 1–4
+bash install_dependencies.sh --skip-slahmr
 ```
+
+The script is idempotent — safe to re-run if a step failed. It installs:
+- **SAM 2** — pixel-accurate dynamic masks (Stage 1); falls back to bbox masks if absent
+- **detectron2** — PHALP dependency; both installed with `--no-build-isolation` to see existing torch
+- **PHALP+** — multi-person tracker (Stage 2); weights auto-downloaded on first run
+- **SLAHMR** — multi-person refinement (Stage 5; skippable)
 
 ### Running the Pipeline
 

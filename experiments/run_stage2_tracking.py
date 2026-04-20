@@ -10,6 +10,7 @@ import sys
 import argparse
 from pathlib import Path
 import numpy as np
+import cv2
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -17,6 +18,28 @@ sys.path.insert(0, str(project_root))
 
 from src.stages.stage2_tracking import run_tracking
 import yaml
+
+
+def load_video_frames(video_path: str, max_frames: int = None):
+    cap = cv2.VideoCapture(video_path)
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        if max_frames and len(frames) >= max_frames:
+            break
+    cap.release()
+    return np.stack(frames)
+
+
+def load_camera_results(stage1_dir: Path) -> dict:
+    camera_file = stage1_dir / "cameras.npz"
+    if not camera_file.exists():
+        camera_file = stage1_dir / "camera_data.npz"
+    data = np.load(camera_file, allow_pickle=True)
+    return dict(data)
 
 
 def main():
@@ -121,31 +144,34 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Load video frames and camera results
+    print("\n[Stage 2] Loading video frames...")
+    frames = load_video_frames(args.video, max_frames=args.max_frames)
+    print(f"[Stage 2] Loaded {len(frames)} frames {frames.shape[1]}×{frames.shape[2]}")
+
+    print("[Stage 2] Loading Stage 1 camera results...")
+    camera_results = load_camera_results(stage1_dir)
+
     # Run world-frame tracking
     print("\n[Stage 2] Starting world-frame tracking...")
 
     results = run_tracking(
-        video_path=args.video,
-        vggt_output_dir=stage1_dir,
+        frames=frames,
+        camera_results=camera_results,
         output_dir=output_dir,
         config=config,
-        max_frames=args.max_frames
     )
 
     print("\n" + "="*80)
     print("STAGE 2 COMPLETED")
     print("="*80)
-    print(f"Total people tracked: {results.get('num_people', 'N/A')}")
-    print(f"Total frames: {results.get('num_frames', 'N/A')}")
-    print(f"Processing speed: {results.get('fps', 'N/A'):.2f} fps")
+    print(f"Total people tracked: {len(results)}")
     print(f"Results saved to: {output_dir}")
     print("="*80 + "\n")
 
-    # Print track summary
-    if 'trajectories' in results:
-        print("Track Summary:")
-        for track_id, traj in results['trajectories'].items():
-            print(f"  Track {track_id}: {len(traj)} frames")
+    print("Track Summary:")
+    for track in results:
+        print(f"  Track {track.track_id}: frames {track.start_frame}–{track.end_frame} ({len(track.frames)} frames)")
 
     return 0
 

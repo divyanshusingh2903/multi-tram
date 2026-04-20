@@ -18,6 +18,15 @@ from src.models.vimo_wrapper import VIMOWrapper, VIMOBatchPredictor
 
 
 @dataclass
+class _SimpleDetection:
+    """Lightweight detection record reconstructed from tracks.npz."""
+    track_id: int
+    bbox: np.ndarray        # (4,) [x1, y1, x2, y2]
+    mask: Optional[np.ndarray]  # (H, W) bool or None
+    keypoints_2d: np.ndarray    # (24, 3)
+
+
+@dataclass
 class SMPLOutput:
     """SMPL output for a single person at a single timestep"""
     frame_id: int
@@ -256,9 +265,8 @@ class PoseEstimator:
                 if det.track_id == track_id:
                     valid_frames.append(frame_id)
                     bboxes.append(det.bbox)
-                    masks.append(
-                        masks_per_frame[frame_id] if masks_per_frame else None
-                    )
+                    masks.append(getattr(det, "mask", None)
+                                 or (masks_per_frame[frame_id] if masks_per_frame else None))
                     keypoints.append(det.keypoints_2d)
                     break
 
@@ -296,22 +304,28 @@ class PoseEstimator:
 
 
 def run_pose_estimation(
-    video_frames: np.ndarray,
-    tracking_results: Dict,
+    video_path: str,
+    camera_data,
+    tracking_data,
     output_dir: Path,
-    config: Dict
+    config: Dict,
+    max_frames: Optional[int] = None,
+    person_ids: Optional[List[int]] = None,
 ) -> Dict:
     """
     Run Stage 3: Per-person pose estimation.
 
     Args:
-        video_frames: Video frames (T, H, W, 3)
-        tracking_results: Results from Stage 2
-        output_dir: Directory to save results
-        config: Configuration dictionary
+        video_path:    Path to the input video file.
+        camera_data:   Loaded cameras.npz (NpzFile or dict with 'poses').
+        tracking_data: Loaded tracks.npz (NpzFile) from Stage 2.
+        output_dir:    Directory to save results.
+        config:        Configuration dictionary.
+        max_frames:    Cap on frames to load (None = all).
+        person_ids:    Restrict to these track IDs (None = all).
 
     Returns:
-        Dictionary with pose estimation results
+        Dictionary with pose estimation results.
     """
     print("\n" + "="*80)
     print("STAGE 3: PER-PERSON 3D POSE & SHAPE ESTIMATION (VIMO)")
@@ -320,31 +334,72 @@ def run_pose_estimation(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Initialize estimator
-    estimator = PoseEstimator(config)
+    # --- Load video frames ---
+    cap = cv2.VideoCapture(str(video_path))
+    frames_list = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames_list.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        if max_frames and len(frames_list) >= max_frames:
+            break
+    cap.release()
+    video_frames = np.stack(frames_list)
+    print(f"[Stage3] Loaded {len(video_frames)} video frames")
 
-    # Get detections and masks from Stage 2
-    detections_per_frame = tracking_results.get('detections', [])
-    masks_per_frame = tracking_results.get('masks', [])
+    # --- Reconstruct per-frame detections from tracks.npz ---
+    # tracks.npz contains track_{id}_frames and track_{id}_bboxes arrays.
+    T = len(video_frames)
+    detections_per_frame: List[List] = [[] for _ in range(T)]
 
-    # Get all track IDs
-    track_ids = set()
-    for detections in detections_per_frame:
-        for det in detections:
-            track_ids.add(det.track_id)
+    track_keys = {k.split("_")[1] for k in tracking_data.files
+                  if k.startswith("track_") and k.endswith("_frames")}
 
-    print(f"[Stage3] Estimating pose for {len(track_ids)} people")
+    # Load per-person masks from Stage 2 masks/ directory
+    stage2_masks_dir = Path(output_dir).parent.parent / "2_tracking" / "masks"
+
+    for tid_str in sorted(track_keys, key=int):
+        tid = int(tid_str)
+        if person_ids and tid not in person_ids:
+            continue
+        frames_arr = tracking_data[f"track_{tid}_frames"]
+        bboxes_arr = tracking_data[f"track_{tid}_bboxes"]
+
+        for i, frame_id in enumerate(frames_arr):
+            frame_id = int(frame_id)
+            if frame_id >= T:
+                continue
+
+            # Load per-person mask from disk if available
+            mask_path = stage2_masks_dir / f"frame_{frame_id:06d}_person_{tid:03d}.npy"
+            mask = np.load(mask_path) if mask_path.exists() else None
+
+            detections_per_frame[frame_id].append(_SimpleDetection(
+                track_id=tid,
+                bbox=bboxes_arr[i],
+                mask=mask,
+                keypoints_2d=np.zeros((24, 3), dtype=np.float32),
+            ))
+
+    track_ids_found = {d.track_id
+                       for dets in detections_per_frame for d in dets}
+    if person_ids:
+        track_ids_found = track_ids_found & set(person_ids)
+
+    print(f"[Stage3] Estimating pose for {len(track_ids_found)} people: "
+          f"{sorted(track_ids_found)}")
 
     all_person_poses = []
     start_time = time.time()
 
     # Process each person
-    for track_id in sorted(track_ids):
+    for track_id in sorted(track_ids_found):
         person_pose = estimator.estimate_poses_for_track(
             video_frames,
             track_id,
             detections_per_frame,
-            masks_per_frame
+            masks_per_frame=[],  # masks embedded in detections_per_frame entries
         )
 
         all_person_poses.append(person_pose)

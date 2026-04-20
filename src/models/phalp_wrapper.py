@@ -67,11 +67,13 @@ class PHALPWrapper:
             import torch
             import omegaconf.dictconfig
             import omegaconf.listconfig
+            import omegaconf.base
             # PyTorch 2.6+ defaults weights_only=True; PHALP checkpoints contain
             # omegaconf types which must be explicitly allowlisted.
             torch.serialization.add_safe_globals([
                 omegaconf.dictconfig.DictConfig,
                 omegaconf.listconfig.ListConfig,
+                omegaconf.base.ContainerMetadata,
             ])
 
             from phalp.trackers.PHALP import PHALP

@@ -206,7 +206,7 @@ class VIMOPosePredictor:
 
             # Resize to 256x256 maintaining aspect ratio
             cropped = cv2.resize(cropped, (256, 256))
-            cropped_mask = cv2.resize(cropped_mask, (256, 256))
+            cropped_mask = cv2.resize(cropped_mask.astype(np.uint8), (256, 256)).astype(bool)
 
             cropped_frames.append(cropped)
             cropped_masks.append(cropped_mask)

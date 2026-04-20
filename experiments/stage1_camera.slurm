@@ -8,7 +8,7 @@
 #SBATCH --output=logs/stage1_camera_%j.out
 #SBATCH --error=logs/stage1_camera_%j.err
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:rtx:1
+#SBATCH --gres=gpu:a40:1
 
 # ============================================================================
 # Stage 1: Camera Estimation (VGGT)

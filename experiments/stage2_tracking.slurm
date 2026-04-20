@@ -8,7 +8,7 @@
 #SBATCH --output=logs/stage2_tracking_%j.out
 #SBATCH --error=logs/stage2_tracking_%j.err
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:rtx:1
+#SBATCH --gres=gpu:a40:1
 
 # ============================================================================
 # Stage 2: Multi-Person Tracking

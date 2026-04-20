@@ -8,7 +8,7 @@
 #SBATCH --output=logs/stage4_world_%j.out
 #SBATCH --error=logs/stage4_world_%j.err
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:rtx:1
+#SBATCH --gres=gpu:a40:1
 
 # ============================================================================
 # Stage 4: World-Space Transformation

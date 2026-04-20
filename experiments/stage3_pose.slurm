@@ -8,7 +8,7 @@
 #SBATCH --output=logs/stage3_pose_%j.out
 #SBATCH --error=logs/stage3_pose_%j.err
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:rtx:2
+#SBATCH --gres=gpu:a40:2
 
 # ============================================================================
 # Stage 3: Per-Person Pose Estimation (VIMO)

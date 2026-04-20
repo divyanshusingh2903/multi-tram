@@ -199,6 +199,7 @@ class PHALPWrapper:
             print("[PHALPWrapper] Unexpected result format:", type(raw))
             return {}
 
+        _logged_keys = False
         for frame_id, dets in frame_map.items():
             frame_dets = []
             if dets is None:
@@ -206,15 +207,26 @@ class PHALPWrapper:
                 continue
 
             for d in (dets if isinstance(dets, list) else [dets]):
+                if not _logged_keys:
+                    print(f"[PHALPWrapper] detection keys: {list(d.keys())}")
+                    _logged_keys = True
+
                 smpl_raw = d.get("smpl", d.get("pose_smpl", {})) or {}
+
+                conf_raw = d.get("conf", d.get("confidence", d.get("score", 1.0)))
+                if isinstance(conf_raw, (list, np.ndarray)):
+                    conf_val = float(np.asarray(conf_raw).flat[0]) if len(conf_raw) > 0 else 1.0
+                else:
+                    conf_val = float(conf_raw)
+
                 frame_dets.append(PHALPDetection(
                     track_id=int(d.get("track_id", -1)),
-                    bbox=np.asarray(d.get("bbox", [0, 0, 1, 1]), dtype=np.float32),
-                    confidence=float(d.get("conf", d.get("confidence", 1.0))),
+                    bbox=np.asarray(d.get("bbox", [0, 0, 1, 1]), dtype=np.float32).flatten()[:4],
+                    confidence=conf_val,
                     keypoints_2d=np.asarray(
                         d.get("keypoints", d.get("keypoints_2d",
                               np.zeros((24, 3)))), dtype=np.float32
-                    ),
+                    ).reshape(-1, 3)[:24],
                     smpl={
                         "poses":  np.asarray(smpl_raw.get("poses",  np.zeros((24, 3))),  dtype=np.float32),
                         "betas":  np.asarray(smpl_raw.get("betas",  np.zeros(10)),        dtype=np.float32),

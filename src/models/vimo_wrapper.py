@@ -16,8 +16,51 @@ import torch
 import numpy as np
 from pathlib import Path
 import sys
+import types
 from typing import Dict, List, Optional
 from dataclasses import dataclass
+
+
+def _inject_tram_stubs():
+    """
+    tools.py in thirdparty/tram imports segment_anything, deva, and detectron2
+    utilities at module level, but hmr_vimo.py only uses parse_chunks from it.
+    Inject a minimal stub so the import chain resolves without those packages.
+    Must be called AFTER tram is on sys.path.
+    """
+    if 'lib.pipeline.tools' in sys.modules:
+        return  # already loaded (real or stub)
+
+    import numpy as _np
+
+    def parse_chunks(frame, boxes, min_len=16):
+        frame_chunks, boxes_chunks = [], []
+        step = frame[1:] - frame[:-1]
+        step = _np.concatenate([[0], step])
+        breaks = _np.where(step != 1)[0]
+        start = 0
+        for bk in breaks:
+            f_chunk, b_chunk = frame[start:bk], boxes[start:bk]
+            start = bk
+            if len(f_chunk) >= min_len:
+                frame_chunks.append(f_chunk)
+                boxes_chunks.append(b_chunk)
+            if bk == breaks[-1]:
+                f_chunk, b_chunk = frame[bk:], boxes[bk:]
+                if len(f_chunk) >= min_len:
+                    frame_chunks.append(f_chunk)
+                    boxes_chunks.append(b_chunk)
+        return frame_chunks, boxes_chunks
+
+    stub = types.ModuleType('lib.pipeline.tools')
+    stub.parse_chunks = parse_chunks
+    sys.modules['lib.pipeline.tools'] = stub
+
+    # Also stub the parent package if not present
+    if 'lib.pipeline' not in sys.modules:
+        pkg = types.ModuleType('lib.pipeline')
+        pkg.tools = stub
+        sys.modules['lib.pipeline'] = pkg
 
 
 @dataclass
@@ -64,6 +107,7 @@ class VIMOWrapper:
     def _init_model(self):
         """Initialize HMR_VIMO model."""
         try:
+            _inject_tram_stubs()
             from lib.models import get_hmr_vimo
 
             # Resolve relative paths against project root

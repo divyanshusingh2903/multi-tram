@@ -53,11 +53,21 @@ class WorldTransformer:
         Args:
             camera_poses: Dictionary with 'R' and 'T' keys
         """
-        R_poses = camera_poses.get('R')
-        T_poses = camera_poses.get('T')
+        # Stage 1 saves (T,4,4) world-to-camera matrices under key 'poses'.
+        # Legacy callers may pass separate 'R' (T,3,3) and 'T' (T,3) keys.
+        if 'poses' in camera_poses:
+            poses = camera_poses['poses']          # (T, 4, 4) T_CW
+            R_poses = poses[:, :3, :3]
+            T_poses = poses[:, :3, 3]
+        else:
+            R_poses = camera_poses.get('R')
+            T_poses = camera_poses.get('T')
 
         if R_poses is None or T_poses is None:
-            raise ValueError("Camera poses must contain 'R' and 'T' keys")
+            raise ValueError(
+                "Camera poses must contain 'poses' (T,4,4) or 'R'+'T' keys. "
+                f"Got: {list(camera_poses.keys())}"
+            )
 
         T = len(R_poses)
         self.camera_poses_world = np.zeros((T, 4, 4))

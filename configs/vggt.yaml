@@ -28,6 +28,8 @@ save_visualizations: true
 yolo_conf: 0.3
 yolo_imgsz: 640       # Resize input to this size before YOLO NMS (avoids timeout on 1080p)
 yolo_batch_size: 16   # Frames per YOLO batch
+sam_model: sam2.1_hiera_large.yaml
+sam_checkpoint: checkpoints/sam2/sam2.1_hiera_large.pt
 
 # Processing options
 subsample_point_cloud: 4  # Subsample factor for point cloud generation

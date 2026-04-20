@@ -130,6 +130,21 @@ wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8x.pt
 
 The path can be customized in `configs/vggt.yaml` via the `yolo_model_path` key.
 
+**6. Install SAM 2 and download checkpoint** (optional but recommended)
+
+SAM 2 produces pixel-accurate dynamic masks in Stage 1. Without it, the pipeline falls back to coarser dilated bounding-box masks. SAM 2 is pip-only and can be installed directly into the conda environment:
+
+```bash
+conda activate multi-tram
+pip install git+https://github.com/facebookresearch/sam2.git
+
+mkdir -p checkpoints/sam2
+wget -P checkpoints/sam2/ \
+  "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt"
+```
+
+The checkpoint path is already set in `configs/vggt.yaml` (`sam_checkpoint`, `sam_model`). No further configuration needed.
+
 ### Running the Pipeline
 
 **Option 1: Run individual stages (SLURM)**

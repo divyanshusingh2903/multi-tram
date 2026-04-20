@@ -1,0 +1,11 @@
+[submodule "thirdparty/slahmr"]
+	path = thirdparty/slahmr
+	url = https://github.com/vye16/slahmr
+
+[submodule "thirdparty/tram"]
+	path = thirdparty/tram
+	url = https://github.com/yufu-wang/tram
+
+[submodule "thirdparty/vggt"]
+	path = thirdparty/vggt
+	url = https://github.com/facebookresearch/vggt

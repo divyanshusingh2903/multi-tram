@@ -162,6 +162,7 @@ class PHALPWrapper:
 
         try:
             base = Path(ctx.name if ctx else tmp_dir)
+            base.mkdir(parents=True, exist_ok=True)
             video_path = str(base / "phalp_input.mp4")
             self._write_video(frames, video_path, fps)
             return self.track_video(video_path)
@@ -183,11 +184,17 @@ class PHALPWrapper:
         """
         out: Dict[int, List[PHALPDetection]] = {}
 
+        # PHALP.track() returns (results, extras) — unpack if needed
+        if isinstance(raw, tuple):
+            raw = raw[0]
+
         # Normalise to frame_id → list[dict]
         if isinstance(raw, dict) and "predictions" in raw:
             frame_map = raw["predictions"]
         elif isinstance(raw, list):
             frame_map = {i: v for i, v in enumerate(raw)}
+        elif isinstance(raw, dict):
+            frame_map = raw
         else:
             print("[PHALPWrapper] Unexpected result format:", type(raw))
             return {}

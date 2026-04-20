@@ -34,7 +34,7 @@ world_bounds:
 batch_size: 8    # Batch size for ReID feature extraction
 
 # SAM 2 (person masks)
-sam_model: sam2.1_hiera_large.yaml
+sam_model: configs/sam2.1/sam2.1_hiera_l.yaml
 sam_checkpoint: checkpoints/sam2/sam2.1_hiera_large.pt
 
 # Output

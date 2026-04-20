@@ -176,6 +176,10 @@ class VIMOWrapper:
         if frame_indices is None:
             frame_indices = np.arange(T)
 
+        import traceback as _tb
+        print(f"[VIMOWrapper] boxes shape={boxes.shape}, "
+              f"boxes[0]={boxes[0] if len(boxes) else 'N/A'}, "
+              f"img_focal={img_focal}, img_center={img_center}")
         try:
             with torch.no_grad():
                 results = self.model.inference(
@@ -197,7 +201,7 @@ class VIMOWrapper:
 
         except Exception as e:
             print(f"[VIMOWrapper] inference failed: {e}")
-            import traceback; traceback.print_exc()
+            _tb.print_exc(file=__import__('sys').stdout)
             return self._predict_dummy(T)
 
     # ------------------------------------------------------------------

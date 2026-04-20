@@ -208,6 +208,14 @@ class PHALPWrapper:
             return {}
 
         print(f"[PHALPWrapper] Parsing {len(person_dicts)} person-frame entries")
+        if person_dicts:
+            d0 = person_dicts[0]
+            print(f"[PHALPWrapper] Sample keys: {list(d0.keys())}")
+            smpl0 = d0.get("smpl", None)
+            print(f"[PHALPWrapper] smpl type={type(smpl0)}, "
+                  f"keys={list(smpl0.keys()) if isinstance(smpl0, dict) else 'N/A'}")
+            tids = {d.get("tid", d.get("track_id", "?")) for d in person_dicts if isinstance(d, dict)}
+            print(f"[PHALPWrapper] Unique track IDs in results: {sorted(tids)}")
         out: Dict[int, List[PHALPDetection]] = {}
 
         for d in person_dicts:
@@ -238,12 +246,20 @@ class PHALPWrapper:
                 joints = np.concatenate([joints, pad], axis=0)
             joints = joints[:24]
 
-            # --- SMPL: stored as a flat array or list, not a nested dict ---
-            smpl_arr = np.asarray(d.get("smpl", np.zeros(82)), dtype=np.float32).flatten()
-            # PHALP SMPL layout: 72 pose params + 10 shape params
-            poses  = smpl_arr[:72].reshape(24, 3) if smpl_arr.size >= 72 else np.zeros((24, 3), dtype=np.float32)
-            betas  = smpl_arr[72:82]              if smpl_arr.size >= 82 else np.zeros(10,       dtype=np.float32)
-            transl = np.asarray(d.get("camera_bbox", np.zeros(3)), dtype=np.float32).flatten()[:3]
+            # --- SMPL: dict with standard keys or flat array ---
+            smpl_raw = d.get("smpl", {})
+            if isinstance(smpl_raw, dict):
+                # Standard SMPL dict: global_orient + body_pose or full pose
+                go   = np.asarray(smpl_raw.get("global_orient", smpl_raw.get("global_pose", np.zeros(3))),  dtype=np.float32).flatten()[:3]
+                bp   = np.asarray(smpl_raw.get("body_pose",     smpl_raw.get("pose",        np.zeros(69))), dtype=np.float32).flatten()[:69]
+                poses = np.concatenate([go, bp]).reshape(24, 3)  # (24, 3) incl. root
+                betas = np.asarray(smpl_raw.get("betas",  np.zeros(10)), dtype=np.float32).flatten()[:10]
+                transl = np.asarray(smpl_raw.get("transl", np.zeros(3)), dtype=np.float32).flatten()[:3]
+            else:
+                smpl_arr = np.asarray(smpl_raw, dtype=np.float32).flatten()
+                poses  = smpl_arr[:72].reshape(24, 3) if smpl_arr.size >= 72 else np.zeros((24, 3), dtype=np.float32)
+                betas  = smpl_arr[72:82]              if smpl_arr.size >= 82 else np.zeros(10,       dtype=np.float32)
+                transl = np.asarray(d.get("camera_bbox", np.zeros(3)), dtype=np.float32).flatten()[:3]
 
             # --- embedding: stored in extra_data or directly ---
             extra = d.get("extra_data", {}) or {}

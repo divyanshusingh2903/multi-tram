@@ -186,10 +186,10 @@ class VIMOPosePredictor:
         cropped_frames = []
         cropped_masks = []
 
-        for frame_id in valid_frame_ids:
+        for i, frame_id in enumerate(valid_frame_ids):
             frame = video_frames[frame_id]
-            mask = masks[frame_id]
-            bbox = bboxes[frame_id]
+            mask = masks[i]
+            bbox = bboxes[i]
 
             # Crop to bbox
             x, y, w, h = bbox

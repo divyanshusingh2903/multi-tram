@@ -178,21 +178,39 @@ class PHALPWrapper:
         """
         Parse PHALP+ tracker output into per-frame PHALPDetection lists.
 
-        PHALP.track() returns a tuple; the first element is a list of
-        per-person dicts (one entry per tracked person per frame) with keys:
-          time, tid, bbox, conf, smpl, 2d_joints, 3d_joints, extra_data, ...
+        PHALP.track() may return:
+          - tuple (results, extras) — unpack first element
+          - list  — flat list of per-person dicts, each with a 'time' key
+          - dict  — frame_key → list[per-person dict]
+        Each per-person dict has keys: time, tid, bbox, conf, smpl, 2d_joints, ...
         """
-        # PHALP.track() returns (results, extras) — unpack
+        # Unpack tuple wrapper if present
         if isinstance(raw, tuple):
             raw = raw[0]
 
-        if not isinstance(raw, list):
-            print(f"[PHALPWrapper] Unexpected result type after unpack: {type(raw)}")
+        # Normalise to a flat iterable of per-person dicts
+        if isinstance(raw, list):
+            person_dicts = raw
+        elif isinstance(raw, dict):
+            # Values may be lists of per-person dicts (keyed by frame name/id)
+            # or the dict itself may be one per-person record (has 'tid' key)
+            if "tid" in raw or "time" in raw:
+                person_dicts = [raw]
+            else:
+                person_dicts = []
+                for v in raw.values():
+                    if isinstance(v, list):
+                        person_dicts.extend(v)
+                    elif isinstance(v, dict):
+                        person_dicts.append(v)
+        else:
+            print(f"[PHALPWrapper] Unexpected result type: {type(raw)}")
             return {}
 
+        print(f"[PHALPWrapper] Parsing {len(person_dicts)} person-frame entries")
         out: Dict[int, List[PHALPDetection]] = {}
 
-        for d in raw:
+        for d in person_dicts:
             if not isinstance(d, dict):
                 continue
 

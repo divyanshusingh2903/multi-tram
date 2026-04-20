@@ -178,65 +178,72 @@ class PHALPWrapper:
         """
         Parse PHALP+ tracker output into per-frame PHALPDetection lists.
 
-        PHALP returns either:
-          raw["predictions"][frame_id] — list of dicts per detection
-        or a list of per-frame dicts directly.
+        PHALP.track() returns a tuple; the first element is a list of
+        per-person dicts (one entry per tracked person per frame) with keys:
+          time, tid, bbox, conf, smpl, 2d_joints, 3d_joints, extra_data, ...
         """
-        out: Dict[int, List[PHALPDetection]] = {}
-
-        # PHALP.track() returns (results, extras) — unpack if needed
+        # PHALP.track() returns (results, extras) — unpack
         if isinstance(raw, tuple):
             raw = raw[0]
 
-        # Normalise to frame_id → list[dict]
-        if isinstance(raw, dict) and "predictions" in raw:
-            frame_map = raw["predictions"]
-        elif isinstance(raw, list):
-            frame_map = {i: v for i, v in enumerate(raw)}
-        elif isinstance(raw, dict):
-            frame_map = raw
-        else:
-            print("[PHALPWrapper] Unexpected result format:", type(raw))
+        if not isinstance(raw, list):
+            print(f"[PHALPWrapper] Unexpected result type after unpack: {type(raw)}")
             return {}
 
-        _logged_keys = False
-        for frame_id, dets in frame_map.items():
-            frame_dets = []
-            if dets is None:
-                out[int(frame_id)] = frame_dets
+        out: Dict[int, List[PHALPDetection]] = {}
+
+        for d in raw:
+            if not isinstance(d, dict):
                 continue
 
-            for d in (dets if isinstance(dets, list) else [dets]):
-                if not _logged_keys:
-                    print(f"[PHALPWrapper] detection keys: {list(d.keys())}")
-                    _logged_keys = True
+            frame_id = int(d.get("time", -1))
+            if frame_id < 0:
+                continue
 
-                smpl_raw = d.get("smpl", d.get("pose_smpl", {})) or {}
+            # --- confidence: PHALP stores detection scores as a list ---
+            conf_raw = d.get("conf", 1.0)
+            if isinstance(conf_raw, (list, np.ndarray)):
+                arr = np.asarray(conf_raw, dtype=np.float32).flatten()
+                conf_val = float(arr[0]) if arr.size > 0 else 1.0
+            else:
+                conf_val = float(conf_raw)
 
-                conf_raw = d.get("conf", d.get("confidence", d.get("score", 1.0)))
-                if isinstance(conf_raw, (list, np.ndarray)):
-                    conf_val = float(np.asarray(conf_raw).flat[0]) if len(conf_raw) > 0 else 1.0
-                else:
-                    conf_val = float(conf_raw)
+            # --- bbox: may be (5,) with confidence appended ---
+            bbox_raw = np.asarray(d.get("bbox", [0, 0, 1, 1]), dtype=np.float32).flatten()
+            bbox = bbox_raw[:4]
 
-                frame_dets.append(PHALPDetection(
-                    track_id=int(d.get("track_id", -1)),
-                    bbox=np.asarray(d.get("bbox", [0, 0, 1, 1]), dtype=np.float32).flatten()[:4],
-                    confidence=conf_val,
-                    keypoints_2d=np.asarray(
-                        d.get("keypoints", d.get("keypoints_2d",
-                              np.zeros((24, 3)))), dtype=np.float32
-                    ).reshape(-1, 3)[:24],
-                    smpl={
-                        "poses":  np.asarray(smpl_raw.get("poses",  np.zeros((24, 3))),  dtype=np.float32),
-                        "betas":  np.asarray(smpl_raw.get("betas",  np.zeros(10)),        dtype=np.float32),
-                        "transl": np.asarray(smpl_raw.get("transl", np.zeros(3)),         dtype=np.float32),
-                    },
-                    embedding=np.asarray(
-                        d.get("embedding", np.zeros(4096)), dtype=np.float32
-                    ),
-                ))
-            out[int(frame_id)] = frame_dets
+            # --- 2D joints: key is '2d_joints', shape (J, 3) or (J*3,) ---
+            joints_raw = d.get("2d_joints", d.get("keypoints_2d", np.zeros((24, 3))))
+            joints = np.asarray(joints_raw, dtype=np.float32).reshape(-1, 3)
+            if joints.shape[0] < 24:
+                pad = np.zeros((24 - joints.shape[0], 3), dtype=np.float32)
+                joints = np.concatenate([joints, pad], axis=0)
+            joints = joints[:24]
+
+            # --- SMPL: stored as a flat array or list, not a nested dict ---
+            smpl_arr = np.asarray(d.get("smpl", np.zeros(82)), dtype=np.float32).flatten()
+            # PHALP SMPL layout: 72 pose params + 10 shape params
+            poses  = smpl_arr[:72].reshape(24, 3) if smpl_arr.size >= 72 else np.zeros((24, 3), dtype=np.float32)
+            betas  = smpl_arr[72:82]              if smpl_arr.size >= 82 else np.zeros(10,       dtype=np.float32)
+            transl = np.asarray(d.get("camera_bbox", np.zeros(3)), dtype=np.float32).flatten()[:3]
+
+            # --- embedding: stored in extra_data or directly ---
+            extra = d.get("extra_data", {}) or {}
+            emb_raw = extra.get("embedding", d.get("embedding", np.zeros(4096)))
+            embedding = np.asarray(emb_raw, dtype=np.float32).flatten()
+            if embedding.size < 4096:
+                embedding = np.zeros(4096, dtype=np.float32)
+
+            det = PHALPDetection(
+                track_id=int(d.get("tid", d.get("track_id", -1))),
+                bbox=bbox,
+                confidence=conf_val,
+                keypoints_2d=joints,
+                smpl={"poses": poses, "betas": betas, "transl": transl},
+                embedding=embedding,
+            )
+
+            out.setdefault(frame_id, []).append(det)
 
         return out
 

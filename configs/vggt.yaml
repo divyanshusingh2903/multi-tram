@@ -24,6 +24,11 @@ save_depth_maps: true
 save_point_cloud: true
 save_visualizations: true
 
+# Dynamic masking (Stage 1 Sub-step A)
+yolo_conf: 0.3
+yolo_imgsz: 640       # Resize input to this size before YOLO NMS (avoids timeout on 1080p)
+yolo_batch_size: 16   # Frames per YOLO batch
+
 # Processing options
 subsample_point_cloud: 4  # Subsample factor for point cloud generation
 max_depth: 100.0  # Maximum valid depth in meters

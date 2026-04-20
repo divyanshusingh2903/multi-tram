@@ -96,7 +96,29 @@ conda activate multi-tram
 git submodule update --init --recursive
 ```
 
-**4. Download YOLOv8x weights**
+**4. Download VGGT model checkpoint**
+
+Stage 1 requires the VGGT-1B checkpoint at `data/pretrained_models/vggt/model.pt`. Download it from Hugging Face (you may need to accept the license and log in first):
+
+```bash
+# Log in if the model is gated
+huggingface-cli login
+
+mkdir -p data/pretrained_models/vggt
+
+# Option A: via huggingface_hub
+python -c "
+from huggingface_hub import hf_hub_download
+hf_hub_download(repo_id='facebook/VGGT-1B', filename='model.pt', local_dir='data/pretrained_models/vggt')
+"
+
+# Option B: direct download
+wget -P data/pretrained_models/vggt/ "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
+```
+
+The checkpoint path can be changed in `configs/vggt.yaml` via `vggt_model_path`. If the checkpoint is not found, Stage 1 automatically falls back to DROID-SLAM.
+
+**5. Download YOLOv8x weights**
 
 Stage 1 requires `yolov8x.pt` in the project root. Download it once:
 

@@ -54,6 +54,8 @@ def generate_dynamic_masks(
     yolo_conf = config.get("yolo_conf", 0.3)
     mask_classes = config.get("mask_classes", DEFAULT_DYNAMIC_CLASSES)
     dilate_px = config.get("sam_dilate_px", 5)
+    yolo_imgsz = config.get("yolo_imgsz", 640)
+    yolo_batch_size = config.get("yolo_batch_size", 16)
 
     # Load YOLOv8-x
     yolo_path = config.get("yolo_model_path", "yolov8x.pt")
@@ -72,20 +74,32 @@ def generate_dynamic_masks(
         mask_dir = Path(output_dir) / "masks"
         mask_dir.mkdir(parents=True, exist_ok=True)
 
+    # --- Batched YOLO inference ---
+    # ultralytics accepts a list of arrays; imgsz caps internal resolution to
+    # avoid NMS timeout on large (e.g. 1080p) inputs.
+    print(f"[Masking] Running YOLO on {T} frames (imgsz={yolo_imgsz}, batch={yolo_batch_size})...")
+    all_yolo_results = []
+    for batch_start in range(0, T, yolo_batch_size):
+        batch = [frames[i] for i in range(batch_start, min(batch_start + yolo_batch_size, T))]
+        batch_results = yolo(
+            batch,
+            conf=yolo_conf,
+            iou=0.45,
+            imgsz=yolo_imgsz,
+            verbose=False,
+        )
+        all_yolo_results.extend(batch_results)
+
+    # --- Per-frame mask generation ---
+    print(f"[Masking] Generating masks for {T} frames...")
     dynamic_masks: List[np.ndarray] = []
 
-    print(f"[Masking] Processing {T} frames...")
-    for t, frame in enumerate(frames):
+    for t, (frame, result) in enumerate(zip(frames, all_yolo_results)):
         union_mask = np.zeros((H, W), dtype=bool)
         instance_info = []
-
-        # --- YOLO detection ---
-        results = yolo(frame, conf=yolo_conf, iou=0.45, verbose=False)
         boxes_xyxy = []
 
-        for result in results:
-            if result.boxes is None:
-                continue
+        if result.boxes is not None:
             for box in result.boxes:
                 cls_id = int(box.cls[0])
                 if cls_id not in mask_classes:

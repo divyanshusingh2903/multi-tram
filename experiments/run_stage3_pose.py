@@ -105,7 +105,7 @@ def main():
     print("\n" + "="*80)
     print("STAGE 3 COMPLETED")
     print("="*80)
-    print(f"Processed {len(results.get('person_results', {}))} people")
+    print(f"Processed {results.get('num_people', 0)} people")
     print(f"Results saved to: {output_dir}")
     print("="*80 + "\n")
 

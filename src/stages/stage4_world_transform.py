@@ -327,38 +327,91 @@ def compose_people_in_world(
 
 
 def run_world_transform(
-    person_poses_list: List,
-    camera_poses_path: Path,
+    camera_data,
     stage3_output_dir: Path,
-    stage4_output_dir: Path,
-    config: Dict
+    output_dir: Path,
+    config: Dict,
+    person_ids=None,
+    # Legacy positional compat
+    person_poses_list: List = None,
+    camera_poses_path: Path = None,
+    stage4_output_dir: Path = None,
 ) -> Dict:
     """
     Run Stage 4: World-space transformation.
 
     Args:
-        person_poses_list: List of PersonPose objects from Stage 3
-        camera_poses_path: Path to cameras.npz from Stage 1
-        stage3_output_dir: Output directory from Stage 3
-        stage4_output_dir: Output directory for Stage 4
-        config: Configuration dictionary
-
-    Returns:
-        Dictionary with world-frame results
+        camera_data:       Loaded cameras.npz (NpzFile) from Stage 1.
+        stage3_output_dir: Output directory from Stage 3.
+        output_dir:        Output directory for Stage 4.
+        config:            Configuration dictionary.
+        person_ids:        Optional list of track IDs to restrict processing.
     """
+    # Resolve legacy call patterns
+    if camera_data is None and camera_poses_path is not None:
+        camera_data = np.load(camera_poses_path)
+    if output_dir is None and stage4_output_dir is not None:
+        output_dir = stage4_output_dir
+
+    stage3_output_dir = Path(stage3_output_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     config = dict(config)
     config['camera_frame_smpl_dir'] = stage3_output_dir
 
-    camera_poses = np.load(camera_poses_path)
+    # Load person poses from Stage 3 output if not provided in-memory
+    if not person_poses_list:
+        person_poses_list = _load_person_poses_from_disk(
+            stage3_output_dir, person_ids
+        )
 
     results = compose_people_in_world(
         person_poses_list,
-        camera_poses,
-        stage4_output_dir,
+        camera_data,
+        output_dir,
         config
     )
 
     return results
+
+
+def _load_person_poses_from_disk(stage3_dir: Path, person_ids=None) -> List:
+    """Reconstruct PersonPose-like objects from Stage 3 npz files."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class _Pose:
+        track_id: int
+        start_frame: int
+        end_frame: int
+        frames: list
+        smpl_params: dict  # poses, betas, global_orient, transl
+
+    poses = []
+    for person_dir in sorted(stage3_dir.glob("person_*")):
+        smpl_path = person_dir / "smpl_params_camera.npz"
+        meta_path = person_dir / "metadata.json"
+        if not smpl_path.exists():
+            continue
+        import json
+        meta = {}
+        if meta_path.exists():
+            with open(meta_path) as f:
+                meta = json.load(f)
+        tid = int(person_dir.name.split("_")[1])
+        if person_ids and tid not in person_ids:
+            continue
+        smpl = dict(np.load(smpl_path))
+        frames = meta.get("frames", list(range(smpl["poses"].shape[0])))
+        poses.append(_Pose(
+            track_id=tid,
+            start_frame=frames[0] if frames else 0,
+            end_frame=frames[-1] if frames else 0,
+            frames=frames,
+            smpl_params=smpl,
+        ))
+    return poses
 
 
 if __name__ == "__main__":

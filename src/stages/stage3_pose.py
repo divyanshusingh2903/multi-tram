@@ -265,8 +265,9 @@ class PoseEstimator:
                 if det.track_id == track_id:
                     valid_frames.append(frame_id)
                     bboxes.append(det.bbox)
-                    masks.append(getattr(det, "mask", None)
-                                 or (masks_per_frame[frame_id] if masks_per_frame else None))
+                    det_mask = getattr(det, "mask", None)
+                    masks.append(det_mask if det_mask is not None
+                                 else (masks_per_frame[frame_id] if masks_per_frame else None))
                     keypoints.append(det.keypoints_2d)
                     break
 

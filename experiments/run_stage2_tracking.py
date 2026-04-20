@@ -38,8 +38,16 @@ def load_camera_results(stage1_dir: Path) -> dict:
     camera_file = stage1_dir / "cameras.npz"
     if not camera_file.exists():
         camera_file = stage1_dir / "camera_data.npz"
-    data = np.load(camera_file, allow_pickle=True)
-    return dict(data)
+    results = dict(np.load(camera_file, allow_pickle=True))
+
+    # Load per-frame depth maps saved as depth_maps/depth_{t:06d}.npy
+    depth_dir = stage1_dir / "depth_maps"
+    if depth_dir.exists():
+        depth_files = sorted(depth_dir.glob("depth_*.npy"))
+        if depth_files:
+            results["depths"] = np.stack([np.load(f) for f in depth_files])
+
+    return results
 
 
 def main():

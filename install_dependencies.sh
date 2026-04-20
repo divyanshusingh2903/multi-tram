@@ -100,8 +100,11 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "Step 5: PHALP+..."
 if ! python -c "import phalp" 2>/dev/null; then
-  # --no-build-isolation needed because PHALP's detectron2 dep also requires torch at build time
-  pip install --no-build-isolation "phalp[all]@git+https://github.com/brjathu/PHALP.git"
+  # Install base phalp without [all] to skip neural-renderer-pytorch (requires GPU at build time).
+  # neural-renderer is only used for rendering; we disable it via render.enable=False.
+  pip install --no-build-isolation "phalp@git+https://github.com/brjathu/PHALP.git"
+  # Install remaining [all] extras manually (omitting neural-renderer-pytorch)
+  pip install scenedetect[opencv] av pytube
 else
   echo "  PHALP already installed, skipping."
 fi

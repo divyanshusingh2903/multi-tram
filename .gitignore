@@ -17,3 +17,7 @@ data/
 
 # yolo
 yolo*
+
+logs/
+results/
+visualizations/outputs/
